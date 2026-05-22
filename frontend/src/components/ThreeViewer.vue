@@ -23,26 +23,30 @@ let rectangleFrame
 let controls
 let lineObject //THREE.LineSegments
 
+let viewSize = 1000 //Show from -1000 to 1000 in both X and Y
+
 const initThree = () => {
   // Setup scene with WHITE background
   scene = new THREE.Scene()
   scene.background = new THREE.Color(0xffffff) // White background
-  
+
   // Setup orthographic camera for 2D view
   const aspect = window.innerWidth / window.innerHeight
-  const viewSize = 10 // Show from -10 to 10 in world coordinates
-  
+
+  console.log("aspect: ", aspect)
+
   camera = new THREE.OrthographicCamera(
     -viewSize * aspect, // left
     viewSize * aspect,  // right
     viewSize,           // top
     -viewSize,          // bottom
     0.1,                // near
-    1000                // far
+    10000                // far
   )
+  console.log("drawable area goes from ", -viewSize * aspect, " to ", viewSize * aspect, " in X and from ", -viewSize, " to ", viewSize, " in Y")
   camera.position.z = 5
   camera.lookAt(0, 0, 0)
-  
+
   // Setup renderer
   renderer = new THREE.WebGLRenderer({ antialias: true })
   renderer.setSize(window.innerWidth, window.innerHeight)
@@ -50,27 +54,27 @@ const initThree = () => {
   container.value.appendChild(renderer.domElement)
 
   controls = new OrbitControls(camera, renderer.domElement)
-  
+
   controls.enableZoom = true
   controls.zoomSpeed = 1.0
   controls.enablePan = true
   controls.panSpeed = 1.0
   controls.enableRotate = false  // Disable rotation for 2D
-  
+
   // Pan limits (optional)
-  controls.maxZoom = 5
-  controls.minZoom = 0.2
-  
+  // controls.maxZoom = 5
+  // controls.minZoom = 0.2
+
   // For orthographic camera
-  controls.screenSpacePanning = true 
-  
-  drawRectangleFrame()
+  controls.screenSpacePanning = true
+
+  drawRectangleFrame(-1500, 1000, 900, -500)
   animate();
-  
+
 }
 
 async function handleDownloadRequest() {
-  console.log('Download request received in ThreeViewer') 
+  console.log('Download request received in ThreeViewer')
   try {
     const response = await fetch('/api/save_pdf')
     if (!response.ok) {
@@ -86,6 +90,14 @@ async function handleDownloadRequest() {
 
 const handleLinesUpdate = (lines) => {
   console.log('Received via event bus:', lines)
+  if(lines[0].type === 'mbox') {
+    const mbox = lines[0]
+    console.log('MediaBox data received:', mbox.w, " ", mbox.h)
+    const aspect = mbox.w / mbox.h
+    const newViewSize = mbox.w / 2
+    resizeView(newViewSize)
+    drawRectangleFrame(-mbox.w / 2, mbox.w / 2, mbox.h / 2, -mbox.h / 2)
+  }
   drawObjects(lines)
 }
 
@@ -104,7 +116,7 @@ const drawObjects = (data) => {
   const vertices = []
   const curves = [] //THREE.Line[]
   const colors = []
-  
+
   data.forEach(object => {
     if(object.type === 'l') {
       vertices.push(object.x1, object.y1, 0)
@@ -114,7 +126,7 @@ const drawObjects = (data) => {
       const r = parseInt(colorHex.slice(1, 3), 16) / 255
       const g = parseInt(colorHex.slice(3, 5), 16) / 255
       const b = parseInt(colorHex.slice(5, 7), 16) / 255
-      
+
       // Each vertex needs its own color (same for both ends of the line)
       colors.push(r, g, b)  // First vertex
       colors.push(r, g, b)  // Second vertex
@@ -126,7 +138,7 @@ const drawObjects = (data) => {
           new THREE.Vector3(object.x3, object.y3, 0),
           new THREE.Vector3(object.x4, object.y4, 0)
         )
-        
+
         const points = curve.getPoints(20) // Get 20 points along the curve
         const geometry = new THREE.BufferGeometry().setFromPoints(points)
         //TODO: Make it so we don't create a new material for each curve
@@ -139,7 +151,7 @@ const drawObjects = (data) => {
       console.log('MediaBox data received:', object.w, " ", object.h)
       // Optionally, we could use this to adjust the camera view or scaling
     }
-    
+
   })
 
   if (vertices.length === 0) {
@@ -151,9 +163,9 @@ const drawObjects = (data) => {
   const geometry = new THREE.BufferGeometry()
   geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertices), 3))
   geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(colors), 3))
-  
+
   const material = new THREE.LineBasicMaterial({ color: 0xffffff, vertexColors: true, linewidth: 2 })
-  
+
   // Create and add line segments
   lineObject = new THREE.Group()
 
@@ -162,19 +174,15 @@ const drawObjects = (data) => {
   curves.forEach(curve => lineObject.add(curve))
 
   scene.add(lineObject)
-  
+
   console.log(`Drew ${data.length} line segments and ${curves.length} curves`)
 }
 
-const drawRectangleFrame = () => {
-  // Define rectangle boundaries (from -11 to 5 in X, -4 to 8 in Y)
-
-
-  const left = -11
-  const right = 5
-  const top = 8
-  const bottom = -4
-  
+const drawRectangleFrame = (left, right, top, bottom) => {
+  if(rectangleFrame) {
+    scene.remove(rectangleFrame)
+    // rectangleFrame.dispose()
+  }
   // Create vertices for the rectangle (4 lines: top, right, bottom, left)
   const vertices = new Float32Array([
     // Top edge (left to right)
@@ -190,14 +198,14 @@ const drawRectangleFrame = () => {
     left, bottom, 0,
     left, top, 0
   ])
-  
+
   const geometry = new THREE.BufferGeometry()
   geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3))
-  
+
   const material = new THREE.LineBasicMaterial({ color: 0x000000, linewidth: 2 })
   rectangleFrame = new THREE.LineSegments(geometry, material)
   scene.add(rectangleFrame)
-  
+
   console.log('Rectangle frame drawn:', { left, right, top, bottom })
 }
 
@@ -205,19 +213,30 @@ const animate = () => {
   requestAnimationFrame(animate)
   controls.update()
   renderer.render(scene, camera)
+  // console.log('viewport data: ', {
+  //   cameraLeft: camera.left,
+  //   cameraRight: camera.right,
+  //   cameraTop: camera.top,
+  //   cameraBottom: camera.bottom,
+  //   aspectRatio: window.innerWidth / window.innerHeight
+  // })
 }
 
 const handleResize = () => {
   const aspect = window.innerWidth / window.innerHeight
-  const viewSize = 10
-  
+
   camera.left = -viewSize * aspect
   camera.right = viewSize * aspect
   camera.top = viewSize
   camera.bottom = -viewSize
   camera.updateProjectionMatrix()
-  
+
   renderer.setSize(window.innerWidth, window.innerHeight)
+}
+
+const resizeView = (newViewSize) => {
+  viewSize = newViewSize
+  handleResize()
 }
 
 onMounted(() => {
@@ -227,7 +246,7 @@ onMounted(() => {
   eventBus.on('lines-updated', handleLinesUpdate)
   eventBus.on('save_pdf_request', () => {
     handleDownloadRequest()
-  })  
+  })
 })
 
 onBeforeUnmount(() => {

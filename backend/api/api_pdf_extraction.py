@@ -99,8 +99,6 @@ def extract_lines_sync(file_bytes: bytes) -> List[Dict[str, float]]:
     
     # Open PDF from memory
     doc = pymupdf.open(stream=file_bytes, filetype="pdf")
-    mediabox = doc[0].mediabox  # Get the mediabox of the first page for scaling reference
-    # print("Mediabox:", mediabox)
     print("mediabox size:", doc[0].mediabox_size)
     
     try:
