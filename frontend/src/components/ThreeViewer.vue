@@ -87,12 +87,38 @@ async function handleDownloadRequest() {
   console.log('Download request received in ThreeViewer')
   try {
     const response = await fetch('/api/save_pdf')
+    
     if (!response.ok) {
       throw new Error('Failed to save PDF')
     }
-    else {
-      console.log('PDF save request successful')
+    
+    // Get the file blob from response
+    const blob = await response.blob()
+    
+    // Create a download link
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    
+    // Extract filename from Content-Disposition header if available
+    const contentDisposition = response.headers.get('Content-Disposition')
+    let filename = 'laser_drawing.pdf'
+    if (contentDisposition) {
+      const match = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/)
+      if (match && match[1]) {
+        filename = match[1].replace(/['"]/g, '')
+      }
     }
+    
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    
+    // Cleanup
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+    
+    console.log('PDF download started')
   } catch (error) {
     console.error('Error saving PDF:', error)
   }

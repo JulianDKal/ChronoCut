@@ -30,6 +30,7 @@ const formattedTime = computed(() => {
 
 // Download handler (no functionality yet)
 const handleDownload = () => {
+  //event handled in ThreeViewer component
   eventBus.emit('save_pdf_request');
 }
 
