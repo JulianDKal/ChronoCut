@@ -1,5 +1,7 @@
 <template>
-  <div ref="container" class="three-container"></div>
+  <div ref="container" class="three-container">
+    <canvas ref="canvas" style="width: 100%; height: 100%; display: block;"></canvas>
+  </div>
 </template>
 
 <style scoped>
@@ -9,6 +11,8 @@
   overflow: hidden;
   position: relative;
 }
+
+
 </style>
 
 <script setup>
@@ -18,22 +22,39 @@ import * as THREE from 'three'
 import eventBus from '../eventBus'
 
 const container = ref(null)
+const canvas = ref(null)
 let scene, camera, renderer
 let rectangleFrame
+let aspect
 let controls
 let lineObject //THREE.LineSegments
+let canvWidth, canvHeight, margin = 50
 
-let viewSize = 1000 //Show from -1000 to 1000 in both X and Y
+//This is the height in y direction. 1000 above 0 and 1000 below 0
+//In X direction, we get -1000 * aspect to 1000 * aspect
+let viewSize = 1000
 
 const initThree = () => {
   // Setup scene with WHITE background
   scene = new THREE.Scene()
   scene.background = new THREE.Color(0xffffff) // White background
 
-  // Setup orthographic camera for 2D view
-  const aspect = window.innerWidth / window.innerHeight
-
-  console.log("aspect: ", aspect)
+   // We use our own canvas instead of letting three.js creating one
+  const existingCanvas = canvas.value
+  canvWidth = container.value.clientWidth;
+  canvHeight = container.value.clientHeight;
+  aspect = canvWidth / canvHeight;
+  
+  // Pass the existing canvas to Three.js
+  renderer = new THREE.WebGLRenderer({ 
+    canvas: existingCanvas,  // Tell Three.js to use THIS canvas
+    antialias: true 
+  })
+  renderer.setSize(canvWidth, canvHeight)
+  renderer.setClearColor(0xffffff) // White clear color
+  container.value.appendChild(renderer.domElement)
+  
+  console.log(canvWidth, canvHeight, aspect);
 
   camera = new THREE.OrthographicCamera(
     -viewSize * aspect, // left
@@ -47,12 +68,6 @@ const initThree = () => {
   camera.position.z = 5
   camera.lookAt(0, 0, 0)
 
-  // Setup renderer
-  renderer = new THREE.WebGLRenderer({ antialias: true })
-  renderer.setSize(window.innerWidth, window.innerHeight)
-  renderer.setClearColor(0xffffff) // White clear color
-  container.value.appendChild(renderer.domElement)
-
   controls = new OrbitControls(camera, renderer.domElement)
 
   controls.enableZoom = true
@@ -61,14 +76,9 @@ const initThree = () => {
   controls.panSpeed = 1.0
   controls.enableRotate = false  // Disable rotation for 2D
 
-  // Pan limits (optional)
-  // controls.maxZoom = 5
-  // controls.minZoom = 0.2
-
-  // For orthographic camera
   controls.screenSpacePanning = true
 
-  drawRectangleFrame(-1500, 1000, 900, -500)
+  drawRectangleFrame(-1500, 1500, 900, -900)
   animate();
 
 }
@@ -93,9 +103,10 @@ const handleLinesUpdate = (lines) => {
   if(lines[0].type === 'mbox') {
     const mbox = lines[0]
     console.log('MediaBox data received:', mbox.w, " ", mbox.h)
-    const aspect = mbox.w / mbox.h
-    const newViewSize = mbox.w / 2
-    resizeView(newViewSize)
+    const newViewSize = mbox.h / 2 + margin
+    console.log("new view size: " + newViewSize)
+    viewSize = newViewSize
+    handleResize()
     drawRectangleFrame(-mbox.w / 2, mbox.w / 2, mbox.h / 2, -mbox.h / 2)
   }
   drawObjects(lines)
@@ -213,17 +224,10 @@ const animate = () => {
   requestAnimationFrame(animate)
   controls.update()
   renderer.render(scene, camera)
-  // console.log('viewport data: ', {
-  //   cameraLeft: camera.left,
-  //   cameraRight: camera.right,
-  //   cameraTop: camera.top,
-  //   cameraBottom: camera.bottom,
-  //   aspectRatio: window.innerWidth / window.innerHeight
-  // })
 }
 
 const handleResize = () => {
-  const aspect = window.innerWidth / window.innerHeight
+  const aspect = canvWidth / canvHeight
 
   camera.left = -viewSize * aspect
   camera.right = viewSize * aspect
@@ -231,12 +235,7 @@ const handleResize = () => {
   camera.bottom = -viewSize
   camera.updateProjectionMatrix()
 
-  renderer.setSize(window.innerWidth, window.innerHeight)
-}
-
-const resizeView = (newViewSize) => {
-  viewSize = newViewSize
-  handleResize()
+  renderer.setSize(canvWidth, canvHeight)
 }
 
 onMounted(() => {
@@ -255,11 +254,3 @@ onBeforeUnmount(() => {
 })
   eventBus.off('lines-updated', handleLinesUpdate)
 </script>
-
-<style scoped>
-.three-container {
-  width: 100%;
-  height: 100vh;
-  overflow: hidden;
-}
-</style>

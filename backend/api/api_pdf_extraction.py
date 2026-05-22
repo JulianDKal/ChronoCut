@@ -13,9 +13,8 @@ router = APIRouter()
 
 executor = ThreadPoolExecutor(max_workers=2)
 
-min_val = 0
-max_val = 0
-range_val = 0
+media_box_width = 0
+media_box_height = 0
 
 @router.post("/pdf_extraction")
 async def extract_pdf_lines(
@@ -44,33 +43,19 @@ async def extract_pdf_lines(
         )
 
         if lines:
-            # Find all coordinate values
-            all_values = []
-            for line in lines:
-                if(line['type'] in ['l', 'c', 're']):
-                    all_values.extend([line['x1'], line['y1'], line['x2'], line['y2']])
-            
-            min_val = min(all_values)
-            max_val = max(all_values)
-            range_val = max_val - min_val
-            
-            # Scale to fit in -5 to 5
-            scale = 10 / range_val if range_val > 0 else 1
-            
-            # Apply normalization
             for line in lines:
                 if(line['type'] in ['l', 'c', 're']):
                     #The additional operation on the y coordinates flips the y-axis, so that the lines are rendered correctly in Three.js
-                    line['x1'] = round((line['x1'] - min_val) * scale - 5, 2)
-                    line['y1'] = round(((max_val - line['y1'])  - min_val) * scale - 5, 2)
-                    line['x2'] = round((line['x2'] - min_val) * scale - 5, 2)
-                    line['y2'] = round(((max_val - line['y2']) - min_val) * scale - 5, 2)
+                    line['x1'] = round((line['x1'] - media_box_width / 2), 2)
+                    line['y1'] = round(((media_box_height - line['y1']) - media_box_height / 2), 2)
+                    line['x2'] = round((line['x2'] - media_box_width / 2), 2)
+                    line['y2'] = round(((media_box_height - line['y2']) - media_box_height / 2), 2)
                     #If it's a curve, also normalize the additional points
                     if(line['type'] == 'c'):
-                        line['x3'] = round((line['x3'] - min_val) * scale - 5, 2)
-                        line['y3'] = round(((max_val - line['y3']) - min_val) * scale - 5, 2)
-                        line['x4'] = round((line['x4'] - min_val) * scale - 5, 2)
-                        line['y4'] = round(((max_val - line['y4']) - min_val) * scale - 5, 2)
+                        line['x3'] = round((line['x3'] - media_box_width / 2), 2)
+                        line['y3'] = round((media_box_height - line['y3']) - media_box_height / 2, 2)
+                        line['x4'] = round((line['x4'] - media_box_width / 2), 2)
+                        line['y4'] = round((media_box_height - line['y4']) - media_box_height / 2, 2)
         # Return standard JSON response
         return JSONResponse(
             content={
@@ -96,6 +81,8 @@ async def extract_pdf_lines(
 def extract_lines_sync(file_bytes: bytes) -> List[Dict[str, float]]:
     """Synchronous PDF extraction function (CPU-bound)"""
     all_lines = []
+    global media_box_width
+    global media_box_height
     
     # Open PDF from memory
     doc = pymupdf.open(stream=file_bytes, filetype="pdf")
@@ -108,6 +95,8 @@ def extract_lines_sync(file_bytes: bytes) -> List[Dict[str, float]]:
                 # Check if mediabox_size exists and has valid values
                 if hasattr(page0, 'mediabox_size') and page0.mediabox_size:
                     size = page0.mediabox_size
+                    media_box_width = size.x if size.x is not None else 0
+                    media_box_height = size.y if size.y is not None else 0
                     all_lines.append({
                         "type": "mbox",
                         "w": float(size.x) if size.x is not None else 0,
@@ -125,12 +114,9 @@ def extract_lines_sync(file_bytes: bytes) -> List[Dict[str, float]]:
             
             for drawing in drawings:
                 line_color = rgb_to_hex(drawing['color'])
-                # print(line_color)
                 for item in drawing['items']:
-                    #For now, we only process the line segments
                     if item[0] == 'l':  # Line segment
                         start, end = item[1], item[2]
-                        
                         all_lines.append({
                             "type": "l",
                             "x1": float(start.x),
@@ -139,6 +125,7 @@ def extract_lines_sync(file_bytes: bytes) -> List[Dict[str, float]]:
                             "y2": float(end.y),
                             "color": line_color
                         })
+                        
                     elif item[0] == 're':  # Rectangle -> 4 lines
                         rect = item[1]
                         x0, y0, x1, y1 = rect.x0, rect.y0, rect.x1, rect.y1
@@ -148,8 +135,8 @@ def extract_lines_sync(file_bytes: bytes) -> List[Dict[str, float]]:
                             {"type": "l", "x1": x1, "y1": y1, "x2": x0, "y2": y1, "color": line_color},
                             {"type": "l", "x1": x0, "y1": y1, "x2": x0, "y2": y0, "color": line_color},
                         ])
-                    #cubic bezier curve
-                    elif item[0] == 'c':
+                        
+                    elif item[0] == 'c':  # cubic bezier curve
                         all_lines.append({
                             "type": "c",
                             "x1": float(item[1].x),
@@ -161,7 +148,7 @@ def extract_lines_sync(file_bytes: bytes) -> List[Dict[str, float]]:
                             "x4": float(item[4].x),
                             "y4": float(item[4].y),
                             "color": line_color
-                        })                        
+                        })            
     finally:
         #Write the extracted lines to a JSON file for debugging
         file_path = Path("uploads")
