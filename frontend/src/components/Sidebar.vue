@@ -46,6 +46,14 @@
       </div>
     </div>
 
+    <!-- Path optimisation toggle -->
+    <div class="button-group">
+      <label class="opt-toggle" :title="'When on, mimics the printer\'s path optimiser (shortest travel). When off, paths are cut in file order.'">
+        <input type="checkbox" v-model="optimizePath" @change="onOptimizeChange" />
+        <span class="opt-text">Optimize path order</span>
+      </label>
+    </div>
+
     <div class="spacer"></div>
 
     <!-- Bottom Button Group -->
@@ -88,6 +96,12 @@ const materials = [
 
 const selectedCutter   = ref(null)
 const selectedMaterial = ref(null)
+
+// Path optimisation toggle (default off — printer cuts in file order)
+const optimizePath = ref(false)
+const onOptimizeChange = () => {
+  eventBus.emit('optimize-changed', optimizePath.value)
+}
 
 // ── Cutter / Material selection ───────────────────────────────────────────────
 const selectCutter = (cutter) => {
@@ -173,6 +187,21 @@ onBeforeUnmount(() => {
 
 .bottom-buttons { margin-bottom: 20px; }
 .spacer { flex: 1; }
+
+/* ── Optimise toggle ───────────────────────────────────────── */
+.opt-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+.opt-toggle:hover { background: rgba(0,0,0,0.03); }
+.opt-toggle input { width: 16px; height: 16px; cursor: pointer; accent-color: #EF8C19; }
+.opt-text { font-size: 13px; color: #353535; }
 
 /* ── Upload button ─────────────────────────────────────────── */
 .upload-btn {

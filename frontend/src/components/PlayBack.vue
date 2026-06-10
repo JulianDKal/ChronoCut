@@ -13,11 +13,11 @@
       <!-- Playback Bar (Progress) - Now Draggable -->
       <div class="playback-bar-container">
         <div class="playback-bar-wrapper">
-          <input 
-            type="range" 
-            min="0" 
-            max="100" 
-            step="1" 
+          <input
+            type="range"
+            min="0"
+            max="100"
+            step="any"
             v-model.number="progress"
             class="playback-slider"
             @input="handleProgressChange"
@@ -58,23 +58,17 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onBeforeUnmount, onMounted } from 'vue'
+import { ref, computed, onBeforeUnmount, onMounted } from 'vue'
 import eventBus from '../eventBus'
 
 // State
 const isPlaying = ref(false)
-const progress = ref(0)
+const progress = ref(0)     // 0..100, reflects the head position on the toolpath
 const speed = ref(1.0)
 const isDragging = ref(false)
 
-const totalTime = ref(100) //For now, just an arbitray number
+const totalTime = ref(0)    // seconds — from toolpath stats
 const currentTime = computed(() => (progress.value / 100) * totalTime.value)
-
-onMounted(() => {
-  eventBus.on('lines-updated', () => {
-    progress.value = 0;
-  })
-})
 
 // Format time as MM:SS
 const formatTime = (seconds) => {
@@ -83,99 +77,44 @@ const formatTime = (seconds) => {
   return `${mins}:${secs.toString().padStart(2, '0')}`
 }
 
-// Timer reference
-let progressInterval = null
+// ── Inbound events ────────────────────────────────────────────────────────────
+// The ThreeViewer owns the playback clock (advanced per render frame) and reports
+// the head position back via 'playback_tick'. We just reflect it on the slider.
+const handleLinesUpdated  = () => { progress.value = 0; isPlaying.value = false }
+const handleToolpathStats = (stats) => { totalTime.value = stats?.totalTime ?? 0 }
+const handleTick  = (p) => { if (!isDragging.value) progress.value = p }
+const handleEnded = () => { isPlaying.value = false }
 
-// Start progress animation
-const startProgress = () => {
-  if (progressInterval) clearInterval(progressInterval)
-  progressInterval = setInterval(() => {
-    if (isPlaying.value && !isDragging.value && progress.value < 100) {
-      progress.value = Math.min(progress.value + 1, 100)
-      eventBus.emit('playback_progress', progress.value)
-      
-      if (progress.value >= 100) {
-        isPlaying.value = false
-        stopProgress()
-      }
-    }
-  }, 1000 / (speed.value * 10)) // Speed affects animation rate
-}
+onMounted(() => {
+  eventBus.on('lines-updated',   handleLinesUpdated)
+  eventBus.on('toolpath-stats',  handleToolpathStats)
+  eventBus.on('playback_tick',   handleTick)
+  eventBus.on('playback_ended',  handleEnded)
+})
+onBeforeUnmount(() => {
+  eventBus.off('lines-updated',  handleLinesUpdated)
+  eventBus.off('toolpath-stats', handleToolpathStats)
+  eventBus.off('playback_tick',  handleTick)
+  eventBus.off('playback_ended', handleEnded)
+})
 
-// Stop progress animation
-const stopProgress = () => {
-  if (progressInterval) {
-    clearInterval(progressInterval)
-    progressInterval = null
-  }
-}
-
-// Handlers
+// ── Controls ──────────────────────────────────────────────────────────────────
 const handlePlayPause = () => {
   isPlaying.value = !isPlaying.value
-  console.log('Play/Pause clicked - State:', isPlaying.value ? 'Playing' : 'Paused')
-  
-  if (isPlaying.value) {
-    startProgress()
-  } else {
-    stopProgress()
-  }
-  
   eventBus.emit('playback_playpause', isPlaying.value)
 }
 
 const handleSpeedChange = () => {
-  console.log('Speed changed to:', speed.value)
   eventBus.emit('playback_speed', speed.value)
-  
-  // Restart progress with new speed if playing
-  if (isPlaying.value) {
-    startProgress()
-  }
 }
 
 const handleProgressChange = (event) => {
   progress.value = parseFloat(event.target.value)
-  console.log('Progress changed to:', progress.value)
-  eventBus.emit('playback_progress', progress.value)
+  eventBus.emit('playback_seek', progress.value)
 }
 
-const handleSliderMouseDown = () => {
-  isDragging.value = true
-  if (isPlaying.value) {
-    // Pause temporarily while dragging
-    stopProgress()
-  }
-}
-
-const handleSliderMouseUp = () => {
-  isDragging.value = false
-  if (isPlaying.value && progress.value < 100) {
-    startProgress()
-  }
-}
-
-// Watch progress for external changes
-watch(progress, (newValue) => {
-  if (newValue >= 100) {
-    isPlaying.value = false
-    stopProgress()
-  }
-})
-
-// Watch isPlaying to manage timer
-watch(isPlaying, (newValue) => {
-  if (newValue && !isDragging.value) {
-    startProgress()
-  } else if (!newValue) {
-    stopProgress()
-  }
-})
-
-// Cleanup on component unmount
-onBeforeUnmount(() => {
-  stopProgress()
-})
+const handleSliderMouseDown = () => { isDragging.value = true }
+const handleSliderMouseUp   = () => { isDragging.value = false }
 </script>
 
 <style scoped>
