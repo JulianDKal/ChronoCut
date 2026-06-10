@@ -139,5 +139,24 @@ In the root directory, add the .vscode folder and create this launch.json file:
 
 Then in the vscode sidebar, run the frontend and backend via the GUI. You can start the frontend and backend seperately or run them together via the "Run Backend + Frontend" Option. If this fails and you get for example a *"module named uvicorn not found"* error, make sure you are using the right Python Interpreter (The one in the virtual environment from this project). In VS Code, press "Ctrl + Shift + P" and then type "Select Python Interpreter" in the Search Bar. Select the python interpreter located at "venv/Scripts/python.exe".
 
- The application will then be running on http://localhost:5173/
+The application will then be running on http://localhost:5173/
+
+## Running via Terminal (Windows)
+
+If you prefer to run the application components manually via the terminal, open two separate terminal windows from the root directory:
+
+**Terminal 1: Backend**
+```sh
+cd backend
+.\venv\Scripts\activate
+uvicorn main:app --reload
+```
+
+**Terminal 2: Frontend**
+```sh
+cd frontend
+npm run dev
+```
+
+The application will then be running on http://localhost:5173/
 
