@@ -141,6 +141,7 @@ const handleLinesUpdate = (lines) => {
 }
 
 const handleProgressUpdate = (progress) => {
+    if(!drawingGroup) return;
     const colorAttr = drawingGroup.getObjectByName('lineSegments').geometry.getAttribute('color');
     const colors = colorAttr.array;
     lineAlphaIndex = Math.floor(progress / 100 * colors.length / 4)

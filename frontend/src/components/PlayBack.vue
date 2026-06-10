@@ -10,17 +10,30 @@
         <span class="play-icon">{{ isPlaying ? '⏸' : '▶' }}</span>
       </button>
       
-      <!-- Playback Bar (Progress) -->
+      <!-- Playback Bar (Progress) - Now Draggable -->
       <div class="playback-bar-container">
-        <div class="playback-bar">
-          <div 
-            class="playback-progress" 
-            :style="{ width: progress + '%' }"
-          ></div>
+        <div class="playback-bar-wrapper">
+          <input 
+            type="range" 
+            min="0" 
+            max="100" 
+            step="1" 
+            v-model.number="progress"
+            class="playback-slider"
+            @input="handleProgressChange"
+            @mousedown="handleSliderMouseDown"
+            @mouseup="handleSliderMouseUp"
+          />
+          <div class="playback-bar">
+            <div 
+              class="playback-progress" 
+              :style="{ width: progress + '%' }"
+            ></div>
+          </div>
         </div>
         <div class="time-labels">
-          <span>0:00</span>
-          <span>0:00</span>
+          <span>{{ formatTime(currentTime) }}</span>
+          <span>{{ formatTime(totalTime) }}</span>
         </div>
       </div>
       
@@ -35,7 +48,7 @@
           min="0.5" 
           max="3" 
           step="0.1" 
-          v-model="speed"
+          v-model.number="speed"
           class="speed-slider"
           @input="handleSpeedChange"
         />
@@ -45,36 +58,124 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, computed, watch, onBeforeUnmount, onMounted } from 'vue'
 import eventBus from '../eventBus'
 
 // State
 const isPlaying = ref(false)
 const progress = ref(0)
 const speed = ref(1.0)
+const isDragging = ref(false)
 
-// Handlers (no functionality yet - just UI)
+const totalTime = ref(100) //For now, just an arbitray number
+const currentTime = computed(() => (progress.value / 100) * totalTime.value)
+
+onMounted(() => {
+  eventBus.on('lines-updated', () => {
+    progress.value = 0;
+  })
+})
+
+// Format time as MM:SS
+const formatTime = (seconds) => {
+  const mins = Math.floor(seconds / 60)
+  const secs = Math.floor(seconds % 60)
+  return `${mins}:${secs.toString().padStart(2, '0')}`
+}
+
+// Timer reference
+let progressInterval = null
+
+// Start progress animation
+const startProgress = () => {
+  if (progressInterval) clearInterval(progressInterval)
+  progressInterval = setInterval(() => {
+    if (isPlaying.value && !isDragging.value && progress.value < 100) {
+      progress.value = Math.min(progress.value + 1, 100)
+      eventBus.emit('playback_progress', progress.value)
+      
+      if (progress.value >= 100) {
+        isPlaying.value = false
+        stopProgress()
+      }
+    }
+  }, 1000 / (speed.value * 10)) // Speed affects animation rate
+}
+
+// Stop progress animation
+const stopProgress = () => {
+  if (progressInterval) {
+    clearInterval(progressInterval)
+    progressInterval = null
+  }
+}
+
+// Handlers
 const handlePlayPause = () => {
   isPlaying.value = !isPlaying.value
   console.log('Play/Pause clicked - State:', isPlaying.value ? 'Playing' : 'Paused')
-  // TODO: Implement playback logic
+  
+  if (isPlaying.value) {
+    startProgress()
+  } else {
+    stopProgress()
+  }
+  
+  eventBus.emit('playback_playpause', isPlaying.value)
 }
 
 const handleSpeedChange = () => {
   console.log('Speed changed to:', speed.value)
-  // TODO: Implement speed control logic
+  eventBus.emit('playback_speed', speed.value)
+  
+  // Restart progress with new speed if playing
+  if (isPlaying.value) {
+    startProgress()
+  }
 }
 
-// Simulate progress for demo (remove when implementing real functionality)
-setInterval(() => {
-  if (isPlaying.value && progress.value < 100) {
-    progress.value += 1
-    eventBus.emit('playback_progress', progress.value) // Emit progress event
-  } else if (progress.value >= 100) {
-    isPlaying.value = false
-    progress.value = 100
+const handleProgressChange = (event) => {
+  progress.value = parseFloat(event.target.value)
+  console.log('Progress changed to:', progress.value)
+  eventBus.emit('playback_progress', progress.value)
+}
+
+const handleSliderMouseDown = () => {
+  isDragging.value = true
+  if (isPlaying.value) {
+    // Pause temporarily while dragging
+    stopProgress()
   }
-}, 100)
+}
+
+const handleSliderMouseUp = () => {
+  isDragging.value = false
+  if (isPlaying.value && progress.value < 100) {
+    startProgress()
+  }
+}
+
+// Watch progress for external changes
+watch(progress, (newValue) => {
+  if (newValue >= 100) {
+    isPlaying.value = false
+    stopProgress()
+  }
+})
+
+// Watch isPlaying to manage timer
+watch(isPlaying, (newValue) => {
+  if (newValue && !isDragging.value) {
+    startProgress()
+  } else if (!newValue) {
+    stopProgress()
+  }
+})
+
+// Cleanup on component unmount
+onBeforeUnmount(() => {
+  stopProgress()
+})
 </script>
 
 <style scoped>
@@ -137,27 +238,46 @@ setInterval(() => {
   color: white;
 }
 
-/* Playback Bar */
+/* Playback Bar Container */
 .playback-bar-container {
   flex: 1;
   min-width: 200px;
 }
 
+.playback-bar-wrapper {
+  position: relative;
+  width: 100%;
+}
+
+/* Hidden slider for dragging */
+.playback-slider {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 6px;
+  opacity: 0;
+  cursor: pointer;
+  z-index: 2;
+  margin: 0;
+}
+
+/* Visual bar */
 .playback-bar {
   width: 100%;
   height: 6px;
   background: #ecf0f1;
   border-radius: 3px;
-  cursor: pointer;
   overflow: hidden;
   position: relative;
+  pointer-events: none;
 }
 
 .playback-progress {
   height: 100%;
   background: #3498db;
   border-radius: 3px;
-  transition: width 0.1s linear;
+  transition: width 0.05s linear;
   position: relative;
 }
 
@@ -172,6 +292,11 @@ setInterval(() => {
   background: #3498db;
   border-radius: 50%;
   box-shadow: 0 0 5px rgba(0, 0, 0, 0.2);
+}
+
+/* Make the bar look draggable */
+.playback-bar-container:hover .playback-bar {
+  background: #d5dbdb;
 }
 
 .time-labels {
@@ -203,24 +328,52 @@ setInterval(() => {
 .speed-slider {
   width: 100%;
   height: 4px;
-  /* -webkit-appearance: none; */
+  -webkit-appearance: none;
+  appearance: none;
   background: #ecf0f1;
   border-radius: 2px;
   outline: none;
+  cursor: pointer;
+}
+
+.speed-slider::-webkit-slider-runnable-track {
+  width: 100%;
+  height: 4px;
+  background: #ecf0f1;
+  border-radius: 2px;
 }
 
 .speed-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
+  appearance: none;
   width: 16px;
   height: 16px;
   border-radius: 50%;
   background: #3498db;
   cursor: pointer;
+  margin-top: -6px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
 .speed-slider::-webkit-slider-thumb:hover {
   transform: scale(1.2);
+}
+
+/* Firefox support */
+.speed-slider::-moz-range-track {
+  width: 100%;
+  height: 4px;
+  background: #ecf0f1;
+  border-radius: 2px;
+}
+
+.speed-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #3498db;
+  cursor: pointer;
+  border: none;
 }
 
 /* Responsive */
