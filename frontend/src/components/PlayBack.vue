@@ -46,6 +46,7 @@
 
 <script setup>
 import { ref } from 'vue'
+import eventBus from '../eventBus'
 
 // State
 const isPlaying = ref(false)
@@ -68,9 +69,10 @@ const handleSpeedChange = () => {
 setInterval(() => {
   if (isPlaying.value && progress.value < 100) {
     progress.value += 1
+    eventBus.emit('playback_progress', progress.value) // Emit progress event
   } else if (progress.value >= 100) {
     isPlaying.value = false
-    progress.value = 0
+    progress.value = 100
   }
 }, 100)
 </script>

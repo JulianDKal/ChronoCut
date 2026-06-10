@@ -20,6 +20,7 @@ import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import * as THREE from 'three'
 import eventBus from '../eventBus'
+import { sampler } from 'three/src/nodes/accessors/TextureNode.js'
 
 const container = ref(null)
 const canvas = ref(null)
@@ -27,8 +28,9 @@ let scene, camera, renderer
 let rectangleFrame
 let aspect
 let controls
-let lineObject //THREE.LineSegments
+let drawingGroup //THREE.LineSegments
 let canvWidth, canvHeight, margin = 50
+let lineAlphaIndex = 0
 
 //This is the height in y direction. 1000 above 0 and 1000 below 0
 //In X direction, we get -1000 * aspect to 1000 * aspect
@@ -138,6 +140,19 @@ const handleLinesUpdate = (lines) => {
   drawObjects(lines)
 }
 
+const handleProgressUpdate = (progress) => {
+    const colorAttr = drawingGroup.getObjectByName('lineSegments').geometry.getAttribute('color');
+    const colors = colorAttr.array;
+    lineAlphaIndex = Math.floor(progress / 100 * colors.length / 4)
+
+    for (let i = 0; i < colors.length / 4; i++) {
+        colors[i * 4 + 3] = i < lineAlphaIndex ? 1.0 : 0.2;
+    }
+
+    colorAttr.needsUpdate = true;
+}
+
+
 const drawObjects = (data) => {
   if (!data || data.length === 0) {
     console.warn('No lines to draw')
@@ -145,14 +160,16 @@ const drawObjects = (data) => {
   }
 
   // Clear existing lines if any
-  if (lineObject) {
-    scene.remove(lineObject)
+  if (drawingGroup) {
+    scene.remove(drawingGroup)
   }
 
   // Build vertices array
   const vertices = []
-  const curves = [] //THREE.Line[]
+  // const curves = [] //THREE.Line[]
   const colors = []
+  let lineIndex = 0
+
 
   data.forEach(object => {
     if(object.type === 'l') {
@@ -164,9 +181,13 @@ const drawObjects = (data) => {
       const g = parseInt(colorHex.slice(3, 5), 16) / 255
       const b = parseInt(colorHex.slice(5, 7), 16) / 255
 
+      const alpha = 0.2
+      console.log(alpha)
+
       // Each vertex needs its own color (same for both ends of the line)
-      colors.push(r, g, b)  // First vertex
-      colors.push(r, g, b)  // Second vertex
+      colors.push(r, g, b, alpha)  // First vertex
+      colors.push(r, g, b, alpha)  // Second vertex
+      lineIndex++;
     }
     else if(object.type === 'c') {
         const curve = new THREE.CubicBezierCurve(
@@ -176,17 +197,39 @@ const drawObjects = (data) => {
           new THREE.Vector3(object.x4, object.y4, 0)
         )
 
-        const points = curve.getPoints(20) // Get 20 points along the curve
-        const geometry = new THREE.BufferGeometry().setFromPoints(points)
+        const sampleRate = 20 //How many points get sampled from a curve
+
+        const points = curve.getPoints(sampleRate)
+        if(points.length < 2){
+          console.warn('Not enough points sampled from curve to draw a line')
+          return
+        }
+        for(let i = 0; i < points.length - 1; i++) {
+          const point = points[i]
+          const pointAfter = points[i + 1]
+          vertices.push(point.x, point.y, 0)
+          vertices.push(pointAfter.x, pointAfter.y, 0)
+
+          // Parse color (convert hex to RGB 0-1 range)
+          const colorHex = object.color || '#000000'
+          const r = parseInt(colorHex.slice(1, 3), 16) / 255
+          const g = parseInt(colorHex.slice(3, 5), 16) / 255
+          const b = parseInt(colorHex.slice(5, 7), 16) / 255
+
+          const alpha = 0.2
+
+          colors.push(r, g, b, alpha)
+          colors.push(r, g, b, alpha)
+        }
+        // const geometry = new THREE.BufferGeometry().setFromPoints(points)
         //TODO: Make it so we don't create a new material for each curve
         // console.log(`Curve color: ${object.color}`)
-        const material = new THREE.LineBasicMaterial({ color: object.color, linewidth: 2 })
-        const curveObject = new THREE.Line(geometry, material)
-        curves.push(curveObject)
+        // const material = new THREE.LineBasicMaterial({ color: object.color, linewidth: 2 })
+        // const curveObject = new THREE.Line(geometry, material)
+        // curves.push(curveObject)
     }
     else if(object.type === 'mbox') {
       console.log('MediaBox data received:', object.w, " ", object.h)
-      // Optionally, we could use this to adjust the camera view or scaling
     }
 
   })
@@ -199,20 +242,21 @@ const drawObjects = (data) => {
   // Create geometry and material
   const geometry = new THREE.BufferGeometry()
   geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertices), 3))
-  geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(colors), 3))
+  geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(colors), 4))
 
-  const material = new THREE.LineBasicMaterial({ color: 0xffffff, vertexColors: true, linewidth: 2 })
+  const material = new THREE.LineBasicMaterial({ color: 0xffffff, vertexColors: true, linewidth: 2, transparent: true })
 
   // Create and add line segments
-  lineObject = new THREE.Group()
+  drawingGroup = new THREE.Group()
 
   const lineSegments = new THREE.LineSegments(geometry, material)
-  lineObject.add(lineSegments)
-  curves.forEach(curve => lineObject.add(curve))
+  lineSegments.name = 'lineSegments'
+  drawingGroup.add(lineSegments)
+  // curves.forEach(curve => drawingGroup.add(curve))
 
-  scene.add(lineObject)
+  scene.add(drawingGroup)
 
-  console.log(`Drew ${data.length} line segments and ${curves.length} curves`)
+  // console.log(`Drew ${data.length} line segments and ${curves.length} curves`)
 }
 
 const drawRectangleFrame = (left, right, top, bottom) => {
@@ -272,7 +316,10 @@ onMounted(() => {
   eventBus.on('save_pdf_request', () => {
     handleDownloadRequest()
   })
-})
+  eventBus.on('playback_progress', (progress) => {
+    handleProgressUpdate(progress)
+  })
+ })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleResize)
