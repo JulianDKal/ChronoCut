@@ -26,14 +26,22 @@ let rectangleFrame
 let drawingGroup       // THREE.Group for imported geometry
 let canvWidth, canvHeight
 const margin = 20      // mm padding around the cutter frame
-let lineAlphaIndex = 0 // playback progress cursor (segment index)
 
 // Cutter state — default to Edgar 1000×700 mm
 let cutterW = 1000
 let cutterH = 700
 
-// Default alpha for line/curve segments not yet "cut" during playback
-const DEFAULT_ALPHA = 0.2
+// Opacity of the faint full-design preview drawn under the playback progress
+const PREVIEW_OPACITY = 0.2
+
+// Playback state — a solid line that grows smoothly along the toolpath length.
+// Built in drawObjects(), advanced in handleProgressUpdate().
+//   positions      : mutable vertex buffer of the progress line (partial tip moves)
+//   truePositions  : pristine copy used to restore the tip when progress advances
+//   segLen / cumLen: per-segment and cumulative lengths (mm), in draw order
+//   total          : total toolpath length (mm)
+//   lastPartial    : index of the segment whose tip vertex is currently moved
+let playback = null
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 const initThree = () => {
@@ -133,21 +141,46 @@ const handleLinesUpdate = (lines) => {
 }
 
 // ── Playback progress ─────────────────────────────────────────────────────────
-// Dims segments not yet reached (alpha 0.2) and fully shows reached ones (1.0).
+// Reveals the toolpath as a solid line that grows *smoothly* along its length.
+// Whole completed segments are drawn, plus a partial leading segment interpolated
+// to the exact head position — so the tip glides between vertices (cf. the old
+// program's draw_path_layer) instead of snapping vertex-by-vertex.
 const handleProgressUpdate = (progress) => {
-  if (!drawingGroup) return
-  const segments = drawingGroup.getObjectByName('lineSegments')
-  if (!segments) return
+  const pb = playback
+  if (!pb || pb.segCount === 0 || pb.total <= 0) return
 
-  const colorAttr = segments.geometry.getAttribute('color')
-  const colors = colorAttr.array
-  const vertexCount = colors.length / 4
-  lineAlphaIndex = Math.floor((progress / 100) * vertexCount)
+  const target = pb.total * (Math.min(100, Math.max(0, progress)) / 100)
 
-  for (let i = 0; i < vertexCount; i++) {
-    colors[i * 4 + 3] = i < lineAlphaIndex ? 1.0 : DEFAULT_ALPHA
+  // Restore the previously-moved tip vertex to its true position.
+  if (pb.lastPartial >= 0) {
+    const b = pb.lastPartial * 6
+    pb.positions[b + 3] = pb.truePositions[b + 3]
+    pb.positions[b + 4] = pb.truePositions[b + 4]
+    pb.lastPartial = -1
   }
-  colorAttr.needsUpdate = true
+
+  // Count fully-completed segments (cumulative length within target).
+  let full = 0
+  while (full < pb.segCount && pb.cumLen[full] <= target) full++
+
+  let drawnSegs = full
+  if (full < pb.segCount) {
+    const segStart = full > 0 ? pb.cumLen[full - 1] : 0
+    const rem = target - segStart
+    if (rem > 0 && pb.segLen[full] > 0) {
+      const f = rem / pb.segLen[full]
+      const b = full * 6
+      const x1 = pb.truePositions[b],     y1 = pb.truePositions[b + 1]
+      const x2 = pb.truePositions[b + 3], y2 = pb.truePositions[b + 4]
+      pb.positions[b + 3] = x1 + (x2 - x1) * f
+      pb.positions[b + 4] = y1 + (y2 - y1) * f
+      pb.lastPartial = full
+      drawnSegs = full + 1
+    }
+  }
+
+  pb.posAttr.needsUpdate = true
+  pb.line.geometry.setDrawRange(0, drawnSegs * 2)
 }
 
 // ── Draw imported geometry ────────────────────────────────────────────────────
@@ -157,10 +190,13 @@ const drawObjects = (data) => {
 
   drawingGroup = new THREE.Group()
 
-  // Straight lines and flattened curves share one RGBA LineSegments buffer so
-  // the playback effect can fade them in segment-by-segment.
-  const vertices = []
-  const colors   = []   // RGBA: 4 components per vertex
+  // Straight lines and flattened curves are collected, in draw order, into one
+  // ordered segment stream. It feeds two things:
+  //   • a faint full-design preview (always visible)
+  //   • the playback "progress" line that grows smoothly along the path length
+  const vertices = []   // xyz per vertex (2 per segment)
+  const colors   = []   // rgb per vertex
+  const segLen   = []   // length (mm) of each segment, in order
 
   const pushSeg = (x1, y1, x2, y2, hex) => {
     vertices.push(x1, y1, 0, x2, y2, 0)
@@ -168,7 +204,8 @@ const drawObjects = (data) => {
     const r = parseInt(c.slice(1, 3), 16) / 255
     const g = parseInt(c.slice(3, 5), 16) / 255
     const b = parseInt(c.slice(5, 7), 16) / 255
-    colors.push(r, g, b, DEFAULT_ALPHA, r, g, b, DEFAULT_ALPHA)
+    colors.push(r, g, b, r, g, b)
+    segLen.push(Math.hypot(x2 - x1, y2 - y1))
   }
 
   data.forEach(obj => {
@@ -236,22 +273,61 @@ const drawObjects = (data) => {
     }
   })
 
-  // Batch all straight lines + flattened curves into one LineSegments draw call.
+  // Build the line geometry (faint preview + smooth playback progress line).
+  playback = null
   if (vertices.length > 0) {
-    const geo = new THREE.BufferGeometry()
-    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertices), 3))
-    geo.setAttribute('color',    new THREE.BufferAttribute(new Float32Array(colors), 4))
-    const mat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true })
-    const lineSegments = new THREE.LineSegments(geo, mat)
-    lineSegments.name = 'lineSegments'
-    drawingGroup.add(lineSegments)
+    const pos = new Float32Array(vertices)
+    const col = new Float32Array(colors)
+
+    // 1) Faint full-design preview — static, always visible.
+    const previewGeo = new THREE.BufferGeometry()
+    previewGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+    previewGeo.setAttribute('color',    new THREE.BufferAttribute(col, 3))
+    const previewMat = new THREE.LineBasicMaterial({
+      vertexColors: true, transparent: true, opacity: PREVIEW_OPACITY,
+    })
+    drawingGroup.add(new THREE.LineSegments(previewGeo, previewMat))
+
+    // 2) Playback progress line — solid, grows along the path length. Its own
+    //    mutable position buffer lets us slide the leading tip between vertices.
+    const progPositions = pos.slice()           // mutable copy (tip moves)
+    const progGeo = new THREE.BufferGeometry()
+    const posAttr = new THREE.BufferAttribute(progPositions, 3)
+    posAttr.setUsage(THREE.DynamicDrawUsage)
+    progGeo.setAttribute('position', posAttr)
+    progGeo.setAttribute('color', new THREE.BufferAttribute(col.slice(), 3))
+    progGeo.setDrawRange(0, 0)                   // nothing drawn until progress > 0
+    const progMat = new THREE.LineBasicMaterial({ vertexColors: true })
+    const progLine = new THREE.LineSegments(progGeo, progMat)
+    progLine.position.z = 0.05                   // sit just in front of the preview
+    progLine.renderOrder = 1
+    drawingGroup.add(progLine)
+
+    // Cumulative lengths for length-based reveal.
+    const segCount = segLen.length
+    const cumLen = new Float32Array(segCount)
+    let acc = 0
+    for (let i = 0; i < segCount; i++) { acc += segLen[i]; cumLen[i] = acc }
+
+    playback = {
+      line: progLine,
+      posAttr,
+      positions: progPositions,
+      truePositions: pos,
+      segLen,
+      cumLen,
+      total: acc,
+      segCount,
+      lastPartial: -1,
+    }
   }
 
   scene.add(drawingGroup)
 
   const fp  = data.filter(o => o.type === 'fp').length
   const img = data.filter(o => o.type === 'img').length
-  console.log(`Drew ${data.length} objects — ${fp} filled paths, ${img} images`)
+  console.log(`Drew ${data.length} objects — ${fp} filled paths, ${img} images, `
+            + `${segLen.length} toolpath segments (${playback ? playback.total.toFixed(1) : 0} mm)`)
 }
 
 // ── PDF download ──────────────────────────────────────────────────────────────
