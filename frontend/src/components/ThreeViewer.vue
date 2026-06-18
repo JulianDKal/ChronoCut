@@ -33,10 +33,12 @@ let contentBox = null        // bbox of the last loaded design (for re-framing)
 let cutterW = 1000
 let cutterH = 700
 
-// Retained so we can rebuild the toolpath when the optimise toggle changes
-// without re-fetching from the backend.
+// Retained so we can rebuild the toolpath when a toggle changes without
+// re-fetching from the backend.
 let currentData = null
 let optimizePath = false
+let rasterBlock  = false   // draw raster regions as a filling block vs scan lines
+let debugColors  = false   // colour every segment randomly (to count them)
 
 // Travel "Leerwege" are drawn as dotted gray lines: dash on/off length in mm.
 const TRAVEL_DASH = 3
@@ -45,14 +47,30 @@ const TRAVEL_GAP  = 2
 // Opacity of the faint full-design preview drawn under the playback progress
 const PREVIEW_OPACITY = 0.2
 
-// Playback state — a solid line that grows smoothly along the toolpath, in
-// machine order (engrave → cut, with travels). The reveal axis is TIME so the
-// head moves slower through engraves than rapid travels.
-//   positions      : mutable vertex buffer of the progress line (partial tip moves)
-//   truePositions  : pristine copy used to restore the tip when progress advances
-//   segDur / cumDur : per-segment and cumulative durations (s), in draw order
-//   total          : total toolpath duration (s)
-//   lastPartial    : index of the segment whose tip vertex is currently moved
+// Colour helpers. In dark mode, dark line colours (black, dark blue, …) are
+// lightened so they stay visible on the dark background.
+const hexToRGB = (hex) => {
+  const c = hex || '#000000'
+  return [parseInt(c.slice(1, 3), 16) / 255, parseInt(c.slice(3, 5), 16) / 255, parseInt(c.slice(5, 7), 16) / 255]
+}
+const adjustForTheme = ([r, g, b]) => {
+  if (!isDark) return [r, g, b]
+  const lum = 0.299 * r + 0.587 * g + 0.114 * b
+  if (lum < 0.55) {
+    const t = ((0.55 - lum) / 0.55) * 0.75   // mix toward white, more for darker colours
+    return [r + (1 - r) * t, g + (1 - g) * t, b + (1 - b) * t]
+  }
+  return [r, g, b]
+}
+const lineRGB = (hex) => adjustForTheme(hexToRGB(hex))
+const themedColor = (hex) => { const [r, g, b] = lineRGB(hex); return new THREE.Color(r, g, b) }
+
+// Playback state for the single toolpath line. The reveal axis is TIME (so the
+// head moves slower through engraves than rapid travels), driven entirely by the
+// shader's uProgress uniform.
+//   material : the ShaderMaterial whose uProgress uniform we advance
+//   total    : total toolpath duration (s)
+//   segCount : number of line segments (debug / stats)
 let playback = null
 
 // Playback clock — the reveal is advanced per render frame by real elapsed time
@@ -65,15 +83,14 @@ const pbClock = new THREE.Clock()
 // ── Init ──────────────────────────────────────────────────────────────────────
 const initThree = () => {
   scene = new THREE.Scene()
-  scene.background = new THREE.Color(0xffffff)
 
   canvWidth  = container.value.clientWidth
   canvHeight = container.value.clientHeight
 
   renderer = new THREE.WebGLRenderer({ canvas: canvas.value, antialias: true })
   renderer.setSize(canvWidth, canvHeight)
-  renderer.setClearColor(0xffffff)
   container.value.appendChild(renderer.domElement)
+  applyTheme()
 
   // Orthographic camera looking straight at the z=0 plane. Fitting is done via
   // camera.zoom + controls (so zoom-to-cursor and panning compose cleanly).
@@ -95,9 +112,39 @@ const initThree = () => {
   }
 
   applyFrustum()
-  drawCutterFrame()
   frameBox(bedBox())   // start framed on the bed; loading a file re-frames it
   animate()
+}
+
+// ── Theme ─────────────────────────────────────────────────────────────────────
+let isDark = false
+const THEME = {
+  light: { bg: 0xeceef1, bed: 0xffffff, border: 0xd6d9dd },
+  dark:  { bg: 0x1e1f22, bed: 0x2a2c30, border: 0x3a3d42 },
+}
+
+const applyTheme = () => {
+  if (!scene || !renderer) return
+  const t = isDark ? THEME.dark : THEME.light
+  scene.background = new THREE.Color(t.bg)
+  renderer.setClearColor(t.bg)
+  drawCutterFrame()   // redraw bed with themed colours
+}
+
+const handleThemeChanged = (dark) => {
+  isDark = !!dark
+  applyTheme()
+  // Rebuild the design so line/fill colours re-adjust for the new theme, while
+  // keeping the current playback position.
+  if (currentData) {
+    const savedTime = pbTime
+    const wasPlaying = pbPlaying
+    drawObjects(currentData)
+    pbTime = playback ? Math.min(savedTime, playback.total) : 0
+    pbPlaying = wasPlaying
+    revealAtTime(pbTime)
+    emitTick()
+  }
 }
 
 // ── Camera ────────────────────────────────────────────────────────────────────
@@ -156,21 +203,79 @@ const computeContentBBox = (data) => {
 }
 
 // ── Cutter frame ──────────────────────────────────────────────────────────────
+// The bed is drawn as a subtle "sheet of paper": a fill, a soft drop shadow
+// offset to the bottom-right, and a thin light border (no hard black frame).
 // Origin (0,0) = top-left corner.  X → right, Y → down (negative).
-const drawCutterFrame = () => {
-  if (rectangleFrame) scene.remove(rectangleFrame)
+// Build a soft drop-shadow mesh: a blurred black rectangle drawn to a canvas and
+// mapped onto a plane sized so its solid core matches the bed, offset to the
+// bottom-left. The opaque bed fill (drawn on top) hides the part under the bed.
+const makeBedShadow = () => {
+  const cw = 512
+  const ch = Math.max(64, Math.round(cw * cutterH / cutterW))
+  const margin = 56          // canvas px padding around the rect for the blur
+  const canvas = document.createElement('canvas')
+  canvas.width = cw
+  canvas.height = ch
+  const ctx = canvas.getContext('2d')
+  ctx.clearRect(0, 0, cw, ch)
+  ctx.filter = 'blur(26px)'
+  ctx.fillStyle = '#000000'
+  ctx.fillRect(margin, margin, cw - 2 * margin, ch - 2 * margin)
 
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.minFilter = THREE.LinearFilter
+
+  // World size so the solid (pre-blur) rect maps exactly onto the bed.
+  const planeW = cutterW * cw / (cw - 2 * margin)
+  const planeH = cutterH * ch / (ch - 2 * margin)
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(planeW, planeH),
+    new THREE.MeshBasicMaterial({
+      map: tex, transparent: true, depthWrite: false,
+      opacity: isDark ? 0.55 : 0.22,
+    }),
+  )
+  // Centre on the bed, then offset toward the bottom-left.
+  mesh.position.set(cutterW / 2 - 18, -cutterH / 2 - 18, -0.4)
+  return mesh
+}
+
+const drawCutterFrame = () => {
+  if (rectangleFrame) {
+    scene.remove(rectangleFrame)
+    rectangleFrame.traverse(o => {
+      if (o.geometry) o.geometry.dispose()
+      if (o.material) { o.material.map?.dispose(); o.material.dispose() }
+    })
+  }
+  const t = isDark ? THEME.dark : THEME.light
+  const group = new THREE.Group()
   const L = 0, R = cutterW, T = 0, B = -cutterH
+
+  // Soft drop shadow (bottom-left).
+  group.add(makeBedShadow())
+
+  // Bed fill — white (light) / dark gray (dark).
+  const fill = new THREE.Mesh(
+    new THREE.PlaneGeometry(cutterW, cutterH),
+    new THREE.MeshBasicMaterial({ color: t.bed }),
+  )
+  fill.position.set(cutterW / 2, -cutterH / 2, -0.2)
+  group.add(fill)
+
+  // Thin subtle outline.
   const verts = new Float32Array([
-    L, T, 0,  R, T, 0,
-    R, T, 0,  R, B, 0,
-    R, B, 0,  L, B, 0,
-    L, B, 0,  L, T, 0,
+    L, T, 0,  R, T, 0,   R, T, 0,  R, B, 0,
+    R, B, 0,  L, B, 0,   L, B, 0,  L, T, 0,
   ])
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.BufferAttribute(verts, 3))
-  rectangleFrame = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x000000 }))
-  scene.add(rectangleFrame)
+  const border = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: t.border }))
+  border.position.z = -0.1
+  group.add(border)
+
+  rectangleFrame = group
+  scene.add(group)
 }
 
 // ── Cutter selection ──────────────────────────────────────────────────────────
@@ -198,6 +303,18 @@ const handleOptimizeChanged = (enabled) => {
   if (currentData) drawObjects(currentData)
 }
 
+// Toggle: raster regions as a filling block vs scan lines. Rebuilds geometry.
+const handleRasterModeChanged = (enabled) => {
+  rasterBlock = !!enabled
+  if (currentData) drawObjects(currentData)
+}
+
+// Toggle: colour every segment randomly (debug aid for counting). Rebuilds.
+const handleDebugColorsChanged = (enabled) => {
+  debugColors = !!enabled
+  if (currentData) drawObjects(currentData)
+}
+
 // ── Playback progress ─────────────────────────────────────────────────────────
 // Reveals the toolpath as a solid line that grows *smoothly* along its length.
 // Whole completed segments are drawn, plus a partial leading segment interpolated
@@ -208,40 +325,11 @@ const handleOptimizeChanged = (enabled) => {
 // head position, so the line grows continuously between vertices.
 const revealAtTime = (target) => {
   const pb = playback
-  if (!pb || pb.segCount === 0 || pb.total <= 0) return
-  target = Math.min(pb.total, Math.max(0, target))
-
-  // Restore the previously-moved tip vertex to its true position.
-  if (pb.lastPartial >= 0) {
-    const b = pb.lastPartial * 6
-    pb.positions[b + 3] = pb.truePositions[b + 3]
-    pb.positions[b + 4] = pb.truePositions[b + 4]
-    pb.lastPartial = -1
-  }
-
-  // Count fully-completed segments (cumulative duration within target time).
-  let full = 0
-  while (full < pb.segCount && pb.cumDur[full] <= target) full++
-
-  let drawnSegs = full
-  if (full < pb.segCount) {
-    const segStart = full > 0 ? pb.cumDur[full - 1] : 0
-    const rem = target - segStart
-    if (rem > 0 && pb.segDur[full] > 0) {
-      // Constant speed within a segment → time fraction == length fraction.
-      const f = rem / pb.segDur[full]
-      const b = full * 6
-      const x1 = pb.truePositions[b],     y1 = pb.truePositions[b + 1]
-      const x2 = pb.truePositions[b + 3], y2 = pb.truePositions[b + 4]
-      pb.positions[b + 3] = x1 + (x2 - x1) * f
-      pb.positions[b + 4] = y1 + (y2 - y1) * f
-      pb.lastPartial = full
-      drawnSegs = full + 1
-    }
-  }
-
-  pb.posAttr.needsUpdate = true
-  pb.line.geometry.setDrawRange(0, drawnSegs * 2)
+  if (!pb || pb.total <= 0) return
+  // The GPU does the rest: every fragment with its time <= uProgress draws solid,
+  // the rest faint — so the reveal is exact and smooth from a single uniform.
+  const t = Math.min(pb.total, Math.max(0, target))
+  for (const m of pb.materials) m.uniforms.uProgress.value = t
 }
 
 // Emit the current head position as a 0–100 progress so the UI slider follows.
@@ -284,14 +372,26 @@ const drawObjects = (data) => {
         else if (cmd.cmd === 'L') sp.lineTo(cmd.x, cmd.y)
         else if (cmd.cmd === 'C') sp.bezierCurveTo(cmd.x1, cmd.y1, cmd.x2, cmd.y2, cmd.x, cmd.y)
       }
-      // isCCW=true: MuPDF glyph outer contours are CCW (positive area) and
-      // holes (letter counters) are CW — so the outer fills and the counter is
-      // a hole. (false wrongly fills the counter, e.g. the eye of an 'e'.)
+      // Pick the fill rule from the OUTER contour's winding (the largest-area
+      // subpath). Fonts wind their contours in opposite directions (TrueType
+      // CW outers vs PostScript/CFF CCW outers), so a hardcoded value fills the
+      // counter (e.g. the eye of an 'e') for half of all fonts. Detecting it
+      // per glyph makes the fill correct regardless of the font.
+      let outerAbs = 0, isCCW = true
+      for (const sub of sp.subPaths) {
+        const pts = sub.getPoints(16)
+        let a = 0
+        for (let i = 0; i < pts.length; i++) {
+          const j = (i + 1) % pts.length
+          a += pts[i].x * pts[j].y - pts[j].x * pts[i].y
+        }
+        if (Math.abs(a) > outerAbs) { outerAbs = Math.abs(a); isCCW = a > 0 }
+      }
       const greenFill = isGreen(obj.fill || '#000000')
-      for (const s of sp.toShapes(true)) {
+      for (const s of sp.toShapes(isCCW)) {
         const geo = new THREE.ShapeGeometry(s)
         const mat = new THREE.MeshBasicMaterial({
-          color: obj.fill || '#000000',
+          color: themedColor(obj.fill || '#000000'),
           side: THREE.DoubleSide,
           // Green fill is engraved as a raster (below); show it faintly so the
           // animated raster lines are visible on top of it.
@@ -314,25 +414,42 @@ const drawObjects = (data) => {
   // ── Toolpath: ordered machine moves (engrave → cut, optional optimise) ────
   const { moves, stats } = buildToolpath(data, { optimize: optimizePath })
 
-  // Expand moves into an ordered segment stream feeding (a) a faint preview and
-  // (b) the time-based playback line. Travels become gray dotted dashes; their
-  // per-dash duration is scaled so the whole travel still consumes its true time.
-  const vertices = []   // xyz per vertex (2 per segment)
-  const colors   = []   // rgb per vertex
-  const segDur   = []   // duration (s) of each segment, in order
+  // Expand moves into a single ordered segment stream. Each vertex also carries
+  // its cumulative TIME along the toolpath (aTime); the shader reveals every
+  // fragment whose aTime <= the current head time, so one line is both the faint
+  // preview and the solid played-so-far portion — no second line, no overdraw.
+  // Travels become gray dotted dashes; their per-dash duration is scaled so the
+  // whole travel still consumes its true time.
+  const vertices = []     // xyz per vertex (2 per segment)
+  const colors   = []     // rgb per vertex
+  const times    = []     // cumulative time (s) at each vertex
+  const rasterBlocks = [] // { bbox, t0, t1, color } when "raster as block" is on
+  let runTime = 0         // running time along the toolpath
 
-  const colorRGB = (hex) => {
-    const c = hex || '#000000'
-    return [parseInt(c.slice(1,3),16)/255, parseInt(c.slice(3,5),16)/255, parseInt(c.slice(5,7),16)/255]
-  }
   const pushSeg = (x1, y1, x2, y2, rgb, dur) => {
+    const t0 = runTime, t1 = runTime + dur
+    runTime = t1
+    // Debug: give each segment its own random colour so they're easy to count.
+    const c = debugColors ? [Math.random(), Math.random(), Math.random()] : rgb
     vertices.push(x1, y1, 0, x2, y2, 0)
-    colors.push(rgb[0], rgb[1], rgb[2], rgb[0], rgb[1], rgb[2])
-    segDur.push(dur)
+    colors.push(c[0], c[1], c[2], c[0], c[1], c[2])
+    times.push(t0, t1)
   }
 
   for (const m of moves) {
     const speed = SPEED_MM_S[m.kind] || SPEED_MM_S.other
+
+    if (m.category === 'raster' && rasterBlock && m.bbox) {
+      // Engrave region as a filling block: skip the serpentine segments, record
+      // the region + its time span, and advance the clock by the same duration
+      // so the overall timeline is identical to the scan-line version.
+      let len = 0
+      for (const prim of m.prims) len += Math.hypot(prim.b.x - prim.a.x, prim.b.y - prim.a.y)
+      const dur = len / speed
+      rasterBlocks.push({ bbox: m.bbox, t0: runTime, t1: runTime + dur, color: lineRGB(m.color) })
+      runTime += dur
+      continue
+    }
 
     if (m.kind === 'travel') {
       // Dotted travel: emit on-dashes only, distributing the full travel time
@@ -341,7 +458,7 @@ const drawObjects = (data) => {
       const full = Math.hypot(b.x - a.x, b.y - a.y)
       if (full < 1e-6) continue
       const ux = (b.x - a.x) / full, uy = (b.y - a.y) / full
-      const rgb = colorRGB(m.color)
+      const rgb = lineRGB(m.color)
       const dashes = []
       for (let d = 0; d < full; d += TRAVEL_DASH + TRAVEL_GAP) {
         dashes.push([d, Math.min(d + TRAVEL_DASH, full)])
@@ -355,7 +472,7 @@ const drawObjects = (data) => {
     } else {
       // Beam-on path: tessellate each primitive (lines stay lines; beziers are
       // adaptively flattened by arc length so they render as smooth curves).
-      const rgb = colorRGB(m.color)
+      const rgb = lineRGB(m.color)
       for (const prim of m.prims) {
         const pts = flattenPrim(prim)
         for (let i = 0; i < pts.length - 1; i++) {
@@ -366,69 +483,102 @@ const drawObjects = (data) => {
     }
   }
 
-  // ── Faint design preview — built from the RAW vectors (all colours, incl.
-  //    green) so the original design stays visible under the toolpath. Green is
-  //    engraved as a raster in the toolpath, so this is the only place its
-  //    actual shape is shown.
-  {
-    const dVerts = [], dCols = []
-    const pushPreview = (x1, y1, x2, y2, hex) => {
-      dVerts.push(x1, y1, 0, x2, y2, 0)
-      const rgb = colorRGB(hex)
-      dCols.push(rgb[0], rgb[1], rgb[2], rgb[0], rgb[1], rgb[2])
-    }
-    for (const obj of data) {
-      if (obj.type === 'l') {
-        pushPreview(obj.x1, obj.y1, obj.x2, obj.y2, obj.color)
-      } else if (obj.type === 'c') {
-        const pts = flattenPrim({
-          t: 'C',
-          p0: { x: obj.x1, y: obj.y1 }, p1: { x: obj.x2, y: obj.y2 },
-          p2: { x: obj.x3, y: obj.y3 }, p3: { x: obj.x4, y: obj.y4 },
-        })
-        for (let i = 0; i < pts.length - 1; i++) {
-          pushPreview(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y, obj.color)
+  // ── Single toolpath line ──────────────────────────────────────────────────
+  // One LineSegments holds the whole toolpath. A small shader colours each
+  // fragment: solid if its time has passed (uProgress), faint otherwise. This is
+  // both the preview and the played-so-far line in one cheap draw call, and the
+  // reveal boundary is exact per-pixel (smooth tip) without moving any vertex.
+  playback = null
+  const revealMaterials = []   // all materials whose uProgress the clock advances
+  const segCount = vertices.length / 6
+
+  if (segCount > 0) {
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertices), 3))
+    geo.setAttribute('color',    new THREE.BufferAttribute(new Float32Array(colors), 3))
+    geo.setAttribute('aTime',    new THREE.BufferAttribute(new Float32Array(times), 1))
+
+    const mat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      uniforms: {
+        uProgress:     { value: 0 },
+        uPreviewAlpha: { value: PREVIEW_OPACITY },
+      },
+      vertexShader: `
+        attribute vec3 color;
+        attribute float aTime;
+        varying vec3 vColor;
+        varying float vTime;
+        void main() {
+          vColor = color;
+          vTime = aTime;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
-      }
-    }
-    if (dVerts.length > 0) {
-      const geo = new THREE.BufferGeometry()
-      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(dVerts), 3))
-      geo.setAttribute('color',    new THREE.BufferAttribute(new Float32Array(dCols), 3))
-      const mat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: PREVIEW_OPACITY })
-      drawingGroup.add(new THREE.LineSegments(geo, mat))
-    }
+      `,
+      fragmentShader: `
+        uniform float uProgress;
+        uniform float uPreviewAlpha;
+        varying vec3 vColor;
+        varying float vTime;
+        void main() {
+          float a = vTime <= uProgress ? 1.0 : uPreviewAlpha;
+          gl_FragColor = vec4(vColor, a);
+        }
+      `,
+    })
+
+    const line = new THREE.LineSegments(geo, mat)
+    line.position.z = 0.05
+    drawingGroup.add(line)
+    revealMaterials.push(mat)
   }
 
-  // ── Playback progress line — solid, grows along the toolpath in machine
-  //    order. Its own mutable position buffer lets us slide the leading tip
-  //    between vertices for a smooth reveal.
-  playback = null
-  if (vertices.length > 0) {
-    const pos = new Float32Array(vertices)
-    const col = new Float32Array(colors)
-    const progPositions = pos.slice()
-    const progGeo = new THREE.BufferGeometry()
-    const posAttr = new THREE.BufferAttribute(progPositions, 3)
-    posAttr.setUsage(THREE.DynamicDrawUsage)
-    progGeo.setAttribute('position', posAttr)
-    progGeo.setAttribute('color', new THREE.BufferAttribute(col.slice(), 3))
-    progGeo.setDrawRange(0, 0)
-    const progLine = new THREE.LineSegments(progGeo, new THREE.LineBasicMaterial({ vertexColors: true }))
-    progLine.position.z = 0.05    // sit just in front of the preview
-    progLine.renderOrder = 1
-    drawingGroup.add(progLine)
+  // Raster-as-block meshes: one quad per region, filled top→bottom over its time
+  // span. Same uProgress drives them, so they reveal in sync with the toolpath.
+  for (const blk of rasterBlocks) {
+    const w = blk.bbox.maxX - blk.bbox.minX
+    const h = blk.bbox.maxY - blk.bbox.minY
+    if (w <= 0 || h <= 0) continue
+    const mat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      uniforms: {
+        uProgress:     { value: 0 },
+        uPreviewAlpha: { value: PREVIEW_OPACITY },
+        uT0:    { value: blk.t0 },
+        uT1:    { value: blk.t1 },
+        uColor: { value: new THREE.Color(blk.color[0], blk.color[1], blk.color[2]) },
+      },
+      vertexShader: `
+        varying float vY01;
+        void main() {
+          vY01 = 1.0 - uv.y;   // 0 at top, 1 at bottom
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uProgress;
+        uniform float uPreviewAlpha;
+        uniform float uT0;
+        uniform float uT1;
+        uniform vec3  uColor;
+        varying float vY01;
+        void main() {
+          float t = mix(uT0, uT1, vY01);   // each row engraves at its own time
+          float a = t <= uProgress ? 1.0 : uPreviewAlpha;
+          gl_FragColor = vec4(uColor, a);
+        }
+      `,
+    })
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat)
+    mesh.position.set((blk.bbox.minX + blk.bbox.maxX) / 2, (blk.bbox.minY + blk.bbox.maxY) / 2, 0.03)
+    drawingGroup.add(mesh)
+    revealMaterials.push(mat)
+  }
 
-    // Cumulative durations for the time-based reveal.
-    const segCount = segDur.length
-    const cumDur = new Float32Array(segCount)
-    let acc = 0
-    for (let i = 0; i < segCount; i++) { acc += segDur[i]; cumDur[i] = acc }
-
-    playback = {
-      line: progLine, posAttr, positions: progPositions, truePositions: pos,
-      segDur, cumDur, total: acc, segCount, lastPartial: -1,
-    }
+  if (revealMaterials.length > 0) {
+    playback = { materials: revealMaterials, total: runTime, segCount }
   }
 
   scene.add(drawingGroup)
@@ -439,10 +589,10 @@ const drawObjects = (data) => {
   revealAtTime(0)
   emitTick()
 
-  // Publish stats so the playback panel can show total time / lengths.
-  eventBus.emit('toolpath-stats', { ...stats, optimized: optimizePath })
+  // Publish stats (incl. segment count for the debug overlay).
+  eventBus.emit('toolpath-stats', { ...stats, optimized: optimizePath, segments: segCount })
 
-  console.log(`Toolpath: ${moves.length} moves, ${segDur.length} segments — `
+  console.log(`Toolpath: ${moves.length} moves, ${segCount} segments — `
             + `cut ${stats.cutLen.toFixed(0)}mm, engrave ${stats.engraveLen.toFixed(0)}mm, `
             + `travel ${stats.travelLen.toFixed(0)}mm, ~${stats.totalTime.toFixed(1)}s `
             + `(optimize=${optimizePath})`)
@@ -511,9 +661,12 @@ onMounted(() => {
   eventBus.on('cutter-selected',    handleCutterSelected)
   eventBus.on('save_pdf_request',   handleDownloadRequest)
   eventBus.on('optimize-changed',   handleOptimizeChanged)
+  eventBus.on('raster-mode-changed', handleRasterModeChanged)
+  eventBus.on('debug-colors-changed', handleDebugColorsChanged)
   eventBus.on('playback_playpause', handlePlayPause)
   eventBus.on('playback_speed',     handleSpeed)
   eventBus.on('playback_seek',      handleSeek)
+  eventBus.on('theme-changed',      handleThemeChanged)
 })
 
 onBeforeUnmount(() => {
@@ -522,9 +675,12 @@ onBeforeUnmount(() => {
   eventBus.off('cutter-selected',    handleCutterSelected)
   eventBus.off('save_pdf_request',   handleDownloadRequest)
   eventBus.off('optimize-changed',   handleOptimizeChanged)
+  eventBus.off('raster-mode-changed', handleRasterModeChanged)
+  eventBus.off('debug-colors-changed', handleDebugColorsChanged)
   eventBus.off('playback_playpause', handlePlayPause)
   eventBus.off('playback_speed',     handleSpeed)
   eventBus.off('playback_seek',      handleSeek)
+  eventBus.off('theme-changed',      handleThemeChanged)
   if (renderer) renderer.dispose()
 })
 </script>

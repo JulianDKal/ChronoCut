@@ -46,11 +46,19 @@
       </div>
     </div>
 
-    <!-- Path optimisation toggle -->
-    <div class="button-group">
+    <!-- Toggles -->
+    <div class="button-group toggle-group">
       <label class="opt-toggle" :title="'When on, mimics the printer\'s path optimiser (shortest travel). When off, paths are cut in file order.'">
         <input type="checkbox" v-model="optimizePath" @change="onOptimizeChange" />
         <span class="opt-text">Optimize path order</span>
+      </label>
+      <label class="opt-toggle" :title="'Draw engraving (green/grayscale) as one solid block that fills up, instead of the back-and-forth scan lines. Faster.'">
+        <input type="checkbox" v-model="rasterBlock" @change="onRasterModeChange" />
+        <span class="opt-text">Raster as solid block</span>
+      </label>
+      <label class="opt-toggle" :title="'Debug: colour every line segment randomly so they are easy to count.'">
+        <input type="checkbox" v-model="debugColors" @change="onDebugColorsChange" />
+        <span class="opt-text">Debug: random segment colors</span>
       </label>
     </div>
 
@@ -101,6 +109,18 @@ const selectedMaterial = ref(null)
 const optimizePath = ref(false)
 const onOptimizeChange = () => {
   eventBus.emit('optimize-changed', optimizePath.value)
+}
+
+// Draw raster engraving as a solid filling block instead of scan lines.
+const rasterBlock = ref(false)
+const onRasterModeChange = () => {
+  eventBus.emit('raster-mode-changed', rasterBlock.value)
+}
+
+// Debug: colour every segment randomly so they are easy to count.
+const debugColors = ref(false)
+const onDebugColorsChange = () => {
+  eventBus.emit('debug-colors-changed', debugColors.value)
 }
 
 // ── Cutter / Material selection ───────────────────────────────────────────────
@@ -175,7 +195,8 @@ onBeforeUnmount(() => {
   flex-direction: column;
   height: 100%;
   padding: 20px 0;
-  background: #ffffff;
+  background: var(--panel-bg);
+  transition: background 0.25s ease;
 }
 
 .button-group {
@@ -188,20 +209,23 @@ onBeforeUnmount(() => {
 .bottom-buttons { margin-bottom: 20px; }
 .spacer { flex: 1; }
 
+/* Space between the Material dropdown and the toggles below it */
+.toggle-group { margin-top: 22px; }
+
 /* ── Optimise toggle ───────────────────────────────────────── */
 .opt-toggle {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
-  border: 1px solid #e0e0e0;
+  border: 1px solid var(--ctrl-border);
   border-radius: 8px;
   cursor: pointer;
   user-select: none;
 }
-.opt-toggle:hover { background: rgba(0,0,0,0.03); }
+.opt-toggle:hover { background: var(--hover-bg); }
 .opt-toggle input { width: 16px; height: 16px; cursor: pointer; accent-color: #EF8C19; }
-.opt-text { font-size: 13px; color: #353535; }
+.opt-text { font-size: 13px; color: var(--text-strong); }
 
 /* ── Upload button ─────────────────────────────────────────── */
 .upload-btn {
@@ -225,16 +249,16 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
-  background: rgba(255,255,255,0.1);
-  border: 1px solid #353535;
+  background: transparent;
+  border: 1px solid var(--ctrl-border);
   border-radius: 8px;
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
   transition: background 0.2s;
 }
-.sidebar-btn:hover:not(:disabled) { background: rgba(0,0,0,0.05); }
-.btn-text { flex: 1; text-align: left; color: #353535; }
+.sidebar-btn:hover:not(:disabled) { background: var(--hover-bg); }
+.btn-text { flex: 1; text-align: left; color: var(--text-strong); }
 
 /* ── Dropdown ──────────────────────────────────────────────── */
 .dropdown-wrapper {
@@ -246,19 +270,20 @@ onBeforeUnmount(() => {
   align-items: center;
   width: 100%;
   padding: 12px 16px;
-  background: rgba(255,255,255,0.1);
-  border: 1px solid #353535;
+  background: transparent;
+  border: 1px solid var(--ctrl-border);
   border-radius: 8px;
   font-size: 14px;
   font-weight: 500;
+  color: var(--text-strong);
   cursor: pointer;
   transition: background 0.2s;
 }
-.dropdown-toggle:hover { background: rgba(0,0,0,0.05); }
+.dropdown-toggle:hover { background: var(--hover-bg); }
 
 .arrow {
   margin-left: auto;
-  color: #353535;
+  color: var(--text-muted);
   font-size: 12px;
   transition: transform 0.2s;
   display: inline-block;
@@ -270,8 +295,8 @@ onBeforeUnmount(() => {
   top: calc(100% + 4px);
   left: 0;
   right: 0;
-  background: #fff;
-  border: 1px solid #ccc;
+  background: var(--dropdown-bg);
+  border: 1px solid var(--dropdown-border);
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0,0,0,0.12);
   z-index: 100;
@@ -285,9 +310,9 @@ onBeforeUnmount(() => {
   cursor: pointer;
   transition: background 0.15s;
 }
-.dropdown-item:hover  { background: #f5f5f5; }
-.dropdown-item.active { background: #fff3e0; }
+.dropdown-item:hover  { background: var(--hover-bg); }
+.dropdown-item.active { background: var(--active-bg); }
 
-.item-name   { font-size: 14px; font-weight: 500; color: #353535; }
-.item-detail { font-size: 11px; color: #888; margin-top: 1px; }
+.item-name   { font-size: 14px; font-weight: 500; color: var(--text-strong); }
+.item-detail { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
 </style>

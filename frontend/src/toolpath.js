@@ -76,22 +76,44 @@ function cubicAt(p, t) {
   }
 }
 
+const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 })
+
+// Perpendicular distance from point p to the infinite line through a–b.
+function distToLine(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y
+  const len2 = dx * dx + dy * dy
+  if (len2 < 1e-12) return Math.hypot(p.x - a.x, p.y - a.y)
+  return Math.abs((p.x - a.x) * dy - (p.y - a.y) * dx) / Math.sqrt(len2)
+}
+
+function subdivideCubic(p0, p1, p2, p3, tol, depth, out) {
+  // Flat enough when both control points sit within `tol` of the chord p0–p3.
+  const d = Math.max(distToLine(p1, p0, p3), distToLine(p2, p0, p3))
+  if (depth <= 0 || d <= tol) {
+    out.push(p3)
+    return
+  }
+  // de Casteljau split at t = 0.5
+  const p01 = mid(p0, p1), p12 = mid(p1, p2), p23 = mid(p2, p3)
+  const p012 = mid(p01, p12), p123 = mid(p12, p23)
+  const m = mid(p012, p123)
+  subdivideCubic(p0, p01, p012, m, tol, depth - 1, out)
+  subdivideCubic(m, p123, p23, p3, tol, depth - 1, out)
+}
+
 /**
- * Tessellate a primitive into a polyline, choosing the segment count from the
- * arc length so curves look smooth regardless of size (instead of a fixed 20).
- *
- *   n = clamp(ceil(approxLength / segMm), min, max)
+ * Tessellate a primitive into a polyline using ADAPTIVE (flatness-based)
+ * subdivision: a cubic is split only where it bends away from a straight chord
+ * by more than `tol` mm. Gentle curves get a handful of segments, tight ones
+ * more — far fewer points than the old fixed/length-based count.
  *
  * @returns {Array<{x,y}>} points including both endpoints (line → 2 points)
  */
-export function flattenPrim(p, segMm = 0.4, min = 8, max = 240) {
+export function flattenPrim(p, tol = 0.2, maxDepth = 8) {
   if (p.t === 'L') return [p.a, p.b]
-  // Estimate length cheaply from the control polygon (upper bound-ish).
-  const approx = dist(p.p0, p.p1) + dist(p.p1, p.p2) + dist(p.p2, p.p3)
-  const n = Math.max(min, Math.min(max, Math.ceil(approx / segMm)))
-  const pts = []
-  for (let i = 0; i <= n; i++) pts.push(cubicAt(p, i / n))
-  return pts
+  const out = [p.p0]
+  subdivideCubic(p.p0, p.p1, p.p2, p.p3, tol, maxDepth, out)
+  return out
 }
 
 function primLength(p) {
@@ -212,7 +234,13 @@ function rasterRegion(bbox, color, lastPos) {
   if (dist(lastPos, start) > 0.1) {
     moves.push({ kind: 'travel', color: '#888888', a: { ...lastPos }, b: start })
   }
-  moves.push({ kind: 'engrave', color, category: 'raster', prims })
+  // The full swept rectangle (content + accel/decel overscan on both sides) is
+  // carried so the viewer can optionally draw the region as one filling block
+  // that matches the extent of the serpentine scan lines.
+  moves.push({
+    kind: 'engrave', color, category: 'raster', prims,
+    bbox: { minX: x0, maxX: x1, minY: botY, maxY: topY },
+  })
   const end = prims.length ? primEnd(prims[prims.length - 1]) : start
   return { moves, end }
 }

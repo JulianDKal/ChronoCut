@@ -1,16 +1,15 @@
 <template>
   <div class="playback-container">
-    <h3 class="section-title">Playback Controls</h3>
-
-    <div class="spacer"></div>
-    
     <div class="controls-wrapper">
-      <!-- Play Button -->
-      <button class="play-btn" @click="handlePlayPause">
-        <span class="play-icon">{{ isPlaying ? '⏸' : '▶' }}</span>
+      <!-- Play / Pause -->
+      <button class="play-btn" @click="handlePlayPause" :aria-label="isPlaying ? 'Pause' : 'Play'">
+        <span class="play-icon" :class="{ 'is-play': !isPlaying }">{{ isPlaying ? '⏸' : '▶' }}</span>
       </button>
-      
-      <!-- Playback Bar (Progress) - Now Draggable -->
+
+      <!-- Current time -->
+      <span class="time-label">{{ formatTime(currentTime) }}</span>
+
+      <!-- Timeline -->
       <div class="playback-bar-container">
         <div class="playback-bar-wrapper">
           <input
@@ -25,29 +24,22 @@
             @mouseup="handleSliderMouseUp"
           />
           <div class="playback-bar">
-            <div 
-              class="playback-progress" 
-              :style="{ width: progress + '%' }"
-            ></div>
+            <div class="playback-progress" :style="{ width: progress + '%' }"></div>
           </div>
         </div>
-        <div class="time-labels">
-          <span>{{ formatTime(currentTime) }}</span>
-          <span>{{ formatTime(totalTime) }}</span>
-        </div>
       </div>
-      
-      <!-- Speed Slider -->
+
+      <!-- Total time -->
+      <span class="time-label">{{ formatTime(totalTime) }}</span>
+
+      <!-- Speed -->
       <div class="speed-control">
-        <label class="speed-label">
-          Speed:
-          <span class="speed-value">{{ speed }}x</span>
-        </label>
-        <input 
-          type="range" 
-          min="0.5" 
-          max="3" 
-          step="0.1" 
+        <span class="speed-label">Speed <span class="speed-value">{{ speed }}x</span></span>
+        <input
+          type="range"
+          min="0.5"
+          max="3"
+          step="0.1"
           v-model.number="speed"
           class="speed-slider"
           @input="handleSpeedChange"
@@ -119,39 +111,25 @@ const handleSliderMouseUp   = () => { isDragging.value = false }
 
 <style scoped>
 .playback-container {
-  height: 100%;
+  width: 100%;
   display: flex;
-  flex-direction: column;
-  padding: 15px;
-  background: #ffffff;
-  border-radius: 8px;
-}
-
-.section-title {
-  margin: 0 0 15px 0;
-  font-size: 16px;
-  font-weight: 600;
-  color: #2c3e50;
-  border-bottom: 2px solid #ecf0f1;
-  padding-bottom: 8px;
+  align-items: center;     /* vertically centre the single control row */
+  padding: 12px 18px;
+  background: transparent;
 }
 
 .controls-wrapper {
   display: flex;
-  align-items: center;
-  gap: 20px;
-  flex-wrap: wrap;
-  flex: 7;
-}
-
-.spacer {
-  flex: 3;
+  align-items: center;     /* timeline + speed slider sit on one line */
+  gap: 16px;
+  width: 100%;
 }
 
 /* Play Button */
 .play-btn {
-  width: 50px;
-  height: 50px;
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
   border-radius: 50%;
   background: #3498db;
   border: none;
@@ -159,8 +137,8 @@ const handleSliderMouseUp   = () => { isDragging.value = false }
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.3s ease;
-  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+  transition: background 0.2s ease, transform 0.2s ease;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.15);
 }
 
 .play-btn:hover {
@@ -173,19 +151,38 @@ const handleSliderMouseUp   = () => { isDragging.value = false }
 }
 
 .play-icon {
-  font-size: 24px;
+  font-size: 20px;
+  line-height: 1;
   color: white;
+}
+
+/* Optically centre the ▶ triangle (the pause glyph is already centred). */
+.play-icon.is-play {
+  padding-left: 3px;
+}
+
+/* Time labels (inline, on either side of the timeline) */
+.time-label {
+  flex-shrink: 0;
+  min-width: 36px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Playback Bar Container */
 .playback-bar-container {
   flex: 1;
-  min-width: 200px;
+  min-width: 120px;
 }
 
 .playback-bar-wrapper {
   position: relative;
   width: 100%;
+  height: 14px;            /* bigger hit area; bar is centred within */
+  display: flex;
+  align-items: center;
 }
 
 /* Hidden slider for dragging */
@@ -194,7 +191,7 @@ const handleSliderMouseUp   = () => { isDragging.value = false }
   top: 0;
   left: 0;
   width: 100%;
-  height: 6px;
+  height: 100%;
   opacity: 0;
   cursor: pointer;
   z-index: 2;
@@ -205,9 +202,8 @@ const handleSliderMouseUp   = () => { isDragging.value = false }
 .playback-bar {
   width: 100%;
   height: 6px;
-  background: #ecf0f1;
+  background: var(--track-bg);
   border-radius: 3px;
-  overflow: hidden;
   position: relative;
   pointer-events: none;
 }
@@ -216,21 +212,20 @@ const handleSliderMouseUp   = () => { isDragging.value = false }
   height: 100%;
   background: #3498db;
   border-radius: 3px;
-  transition: width 0.05s linear;
   position: relative;
 }
 
 .playback-progress::after {
   content: '';
   position: absolute;
-  right: -4px;
+  right: -6px;
   top: 50%;
   transform: translateY(-50%);
   width: 12px;
   height: 12px;
   background: #3498db;
   border-radius: 50%;
-  box-shadow: 0 0 5px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.25);
 }
 
 /* Make the bar look draggable */
@@ -238,38 +233,31 @@ const handleSliderMouseUp   = () => { isDragging.value = false }
   background: #d5dbdb;
 }
 
-.time-labels {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 8px;
-  font-size: 12px;
-  color: #7f8c8d;
-}
-
 /* Speed Control */
 .speed-control {
-  min-width: 150px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .speed-label {
-  display: block;
   font-size: 12px;
-  color: #7f8c8d;
-  margin-bottom: 5px;
+  color: var(--text-muted);
+  white-space: nowrap;
 }
 
 .speed-value {
   font-weight: 600;
   color: #3498db;
-  margin-left: 5px;
 }
 
 .speed-slider {
-  width: 100%;
+  width: 90px;
   height: 4px;
   -webkit-appearance: none;
   appearance: none;
-  background: #ecf0f1;
+  background: var(--track-bg);
   border-radius: 2px;
   outline: none;
   cursor: pointer;
@@ -278,7 +266,7 @@ const handleSliderMouseUp   = () => { isDragging.value = false }
 .speed-slider::-webkit-slider-runnable-track {
   width: 100%;
   height: 4px;
-  background: #ecf0f1;
+  background: var(--track-bg);
   border-radius: 2px;
 }
 
@@ -302,7 +290,7 @@ const handleSliderMouseUp   = () => { isDragging.value = false }
 .speed-slider::-moz-range-track {
   width: 100%;
   height: 4px;
-  background: #ecf0f1;
+  background: var(--track-bg);
   border-radius: 2px;
 }
 
