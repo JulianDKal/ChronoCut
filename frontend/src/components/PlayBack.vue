@@ -34,7 +34,7 @@
 
       <!-- Speed -->
       <div class="speed-control">
-        <span class="speed-label">Speed <span class="speed-value">{{ speed }}x</span></span>
+        <span class="speed-label">Speed <span class="speed-value">{{ speedLabel }}x</span></span>
         <input
           type="range"
           min="0.5"
@@ -61,6 +61,9 @@ const isDragging = ref(false)
 
 const totalTime = ref(0)    // seconds — from toolpath stats
 const currentTime = computed(() => (progress.value / 100) * totalTime.value)
+
+// Always one decimal ("1.0x", "2.5x") so the label width stays constant.
+const speedLabel = computed(() => speed.value.toFixed(1))
 
 // Format time as MM:SS
 const formatTime = (seconds) => {
@@ -131,7 +134,7 @@ const handleSliderMouseUp   = () => { isDragging.value = false }
   height: 48px;
   flex-shrink: 0;
   border-radius: 50%;
-  background: #3498db;
+  background: #00ADC6;
   border: none;
   cursor: pointer;
   display: flex;
@@ -142,7 +145,7 @@ const handleSliderMouseUp   = () => { isDragging.value = false }
 }
 
 .play-btn:hover {
-  background: #2980b9;
+  background: #0093A8;
   transform: scale(1.05);
 }
 
@@ -210,27 +213,23 @@ const handleSliderMouseUp   = () => { isDragging.value = false }
 
 .playback-progress {
   height: 100%;
-  background: #3498db;
+  background: #00ADC6;
   border-radius: 3px;
   position: relative;
 }
 
+/* Timeline knob — same size/shadow as the speed-slider thumb for consistency. */
 .playback-progress::after {
   content: '';
   position: absolute;
-  right: -6px;
+  right: -8px;
   top: 50%;
   transform: translateY(-50%);
-  width: 12px;
-  height: 12px;
-  background: #3498db;
+  width: 16px;
+  height: 16px;
+  background: #00ADC6;
   border-radius: 50%;
-  box-shadow: 0 0 4px rgba(0, 0, 0, 0.25);
-}
-
-/* Make the bar look draggable */
-.playback-bar-container:hover .playback-bar {
-  background: #d5dbdb;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
 /* Speed Control */
@@ -249,7 +248,11 @@ const handleSliderMouseUp   = () => { isDragging.value = false }
 
 .speed-value {
   font-weight: 600;
-  color: #3498db;
+  color: #00ADC6;
+  display: inline-block;
+  min-width: 2.4em;          /* reserve space so "1.0x"→"3.0x" doesn't shift layout */
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .speed-slider {
@@ -276,7 +279,7 @@ const handleSliderMouseUp   = () => { isDragging.value = false }
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #3498db;
+  background: #00ADC6;
   cursor: pointer;
   margin-top: -6px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
@@ -298,7 +301,7 @@ const handleSliderMouseUp   = () => { isDragging.value = false }
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #3498db;
+  background: #00ADC6;
   cursor: pointer;
   border: none;
 }

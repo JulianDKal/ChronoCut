@@ -11,8 +11,8 @@
       <div class="viewer-container">
         <ThreeViewer />
 
-        <!-- Debug overlay (top-left) -->
-        <div class="debug-overlay">Segments: {{ segmentCount.toLocaleString() }}</div>
+        <!-- Debug overlay (top-left) — toggled by the sidebar "Debug" switch -->
+        <div v-show="showDebug" class="debug-overlay">Segments: {{ segmentCount.toLocaleString() }}</div>
 
         <!-- Dark-mode toggle (floating, top-right) -->
         <button
@@ -53,6 +53,11 @@ const onLinesUpdated = () => { hasContent.value = true }
 const segmentCount = ref(0)
 const onStats = (stats) => { segmentCount.value = stats?.segments ?? 0 }
 
+// The sidebar "Debug" toggle shows/hides the segment overlay (same event that
+// drives random-segment-colouring in the viewer).
+const showDebug = ref(false)
+const onDebugToggled = (on) => { showDebug.value = !!on }
+
 // Dark mode (the viewer reacts via the 'theme-changed' event). The preference is
 // persisted across reloads in localStorage.
 const THEME_KEY = 'chronocut-theme'
@@ -66,6 +71,7 @@ const toggleTheme = () => {
 onMounted(() => {
   eventBus.on('lines-updated', onLinesUpdated)
   eventBus.on('toolpath-stats', onStats)
+  eventBus.on('debug-colors-changed', onDebugToggled)
   // Sync the viewer to the stored theme. This runs after the child ThreeViewer's
   // onMounted, so its 'theme-changed' listener is already registered.
   if (isDark.value) eventBus.emit('theme-changed', true)
@@ -73,6 +79,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   eventBus.off('lines-updated', onLinesUpdated)
   eventBus.off('toolpath-stats', onStats)
+  eventBus.off('debug-colors-changed', onDebugToggled)
 })
 </script>
 
@@ -204,10 +211,9 @@ onBeforeUnmount(() => {
 .island--timeline { flex: 1 1 auto; min-width: 0; }
 .island--download { flex: 0 0 auto; }
 
-/* Greyed out until something is uploaded */
+/* Greyed out (but NOT transparent) until something is uploaded */
 .floating-dock.is-disabled {
-  opacity: 0.5;
-  filter: grayscale(0.75);
+  filter: grayscale(1) brightness(0.97);
 }
 .floating-dock.is-disabled .island {
   pointer-events: none;

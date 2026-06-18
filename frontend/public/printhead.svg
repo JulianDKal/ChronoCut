@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Laser print-head marker. Replace this file (or drop a printhead.png next to
+     it) to customise the icon shown at the cutter's current position. The image
+     is centred on the head position, so keep the artwork centred. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <g fill="none" stroke="#00ADC6" stroke-width="3.5" stroke-linecap="round">
+    <!-- white halo underneath for contrast on any background -->
+    <g stroke="#ffffff" stroke-width="6" opacity="0.65">
+      <circle cx="32" cy="32" r="17"/>
+      <line x1="32" y1="3"  x2="32" y2="20"/>
+      <line x1="32" y1="44" x2="32" y2="61"/>
+      <line x1="3"  y1="32" x2="20" y2="32"/>
+      <line x1="44" y1="32" x2="61" y2="32"/>
+    </g>
+    <circle cx="32" cy="32" r="17"/>
+    <line x1="32" y1="3"  x2="32" y2="20"/>
+    <line x1="32" y1="44" x2="32" y2="61"/>
+    <line x1="3"  y1="32" x2="20" y2="32"/>
+    <line x1="44" y1="32" x2="61" y2="32"/>
+  </g>
+  <circle cx="32" cy="32" r="3.4" fill="#00ADC6"/>
+</svg>

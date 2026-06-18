@@ -68,7 +68,7 @@ onBeforeUnmount(() => eventBus.off('toolpath-stats', onStats))
 .download-btn {
   width: 100%;
   padding: 12px 20px;
-  background: #70D2FF;
+  background: #00ADC6;
   color: white;
   border: none;
   border-radius: 8px;
@@ -84,7 +84,7 @@ onBeforeUnmount(() => eventBus.off('toolpath-stats', onStats))
 }
 
 .download-btn:hover {
-  background: #4cc3f7;
+  background: #0093A8;
   transform: translateY(-1px);
 }
 

@@ -56,9 +56,9 @@
         <input type="checkbox" v-model="rasterBlock" @change="onRasterModeChange" />
         <span class="opt-text">Raster as solid block</span>
       </label>
-      <label class="opt-toggle" :title="'Debug: colour every line segment randomly so they are easy to count.'">
+      <label class="opt-toggle" :title="'Debug: random segment colours + show the segment counter (top-left).'">
         <input type="checkbox" v-model="debugColors" @change="onDebugColorsChange" />
-        <span class="opt-text">Debug: random segment colors</span>
+        <span class="opt-text">Debug</span>
       </label>
     </div>
 
@@ -264,14 +264,14 @@ onBeforeUnmount(() => {
   user-select: none;
 }
 .opt-toggle:hover { background: var(--hover-bg); }
-.opt-toggle input { width: 16px; height: 16px; cursor: pointer; accent-color: #EF8C19; }
+.opt-toggle input { width: 16px; height: 16px; cursor: pointer; accent-color: #DE041F; }
 .opt-text { font-size: 13px; color: var(--text-strong); }
 
 /* ── Upload button ─────────────────────────────────────────── */
 .upload-btn {
   justify-content: center;
   padding: 14px 16px;
-  background: #EF8C19;
+  background: #DE041F;
   margin: 10px 0;
   border: 0 transparent;
   border-radius: 8px;
@@ -280,7 +280,7 @@ onBeforeUnmount(() => {
   cursor: pointer;
   transition: background 0.2s;
 }
-.upload-btn:hover:not(:disabled) { background: #d97c10; }
+.upload-btn:hover:not(:disabled) { background: #B8031A; }
 .upload-btn-text { color: #fff; }
 
 /* ── Generic sidebar button ────────────────────────────────── */

@@ -26,6 +26,7 @@ let scene, camera, renderer, controls
 let rectangleFrame
 let drawingGroup       // THREE.Group for imported geometry
 let highlightGroup     // overlay group for the Remove-Doubles highlight
+let headMarker         // little laser print-head icon at the current head position
 let canvWidth, canvHeight
 const VIEW_REF_HALF_H = 400  // world half-height (mm) of the frustum at zoom 1
 let contentBox = null        // bbox of the last loaded design (for re-framing)
@@ -112,6 +113,9 @@ const initThree = () => {
     RIGHT:  THREE.MOUSE.PAN,
   }
 
+  headMarker = makeHeadMarker()
+  scene.add(headMarker)
+
   applyFrustum()
   frameBox(bedBox())   // start framed on the bed; loading a file re-frames it
   animate()
@@ -165,16 +169,27 @@ const applyFrustum = () => {
 const bedBox = () => ({ minX: 0, maxX: cutterW, minY: -cutterH, maxY: 0 })
 
 // Centre the view on `box` and zoom so it fits with a little padding.
+// Reserve space at the bottom for the floating timeline/download dock so the
+// print area is never framed behind it.
+const BOTTOM_INSET_PX = 132
+
 const frameBox = (box, pad = 1.12) => {
   if (!camera || !box || !isFinite(box.minX)) return
   const cx = (box.minX + box.maxX) / 2
-  const cy = (box.minY + box.maxY) / 2
+  let   cy = (box.minY + box.maxY) / 2
   const bw = Math.max(1, box.maxX - box.minX)
   const bh = Math.max(1, box.maxY - box.minY)
   const aspect = canvWidth / canvHeight
   const viewW = VIEW_REF_HALF_H * aspect * 2
   const viewH = VIEW_REF_HALF_H * 2
-  camera.zoom = Math.min(viewW / (bw * pad), viewH / (bh * pad))
+  // Fit into (and centre within) the area ABOVE the dock.
+  const inset = Math.min(BOTTOM_INSET_PX, canvHeight * 0.5)
+  const usableFrac = (canvHeight - inset) / canvHeight
+  camera.zoom = Math.min(viewW / (bw * pad), (viewH * usableFrac) / (bh * pad))
+  // Shift the centre down in world space (→ content moves up on screen) by half
+  // the reserved strip, so the box sits centred in the usable area.
+  const worldPerPx = viewH / (camera.zoom * canvHeight)
+  cy -= (inset / 2) * worldPerPx
   camera.position.set(cx, cy, 5)
   camera.lookAt(cx, cy, 0)
   controls.target.set(cx, cy, 0)
@@ -404,6 +419,86 @@ const revealAtTime = (target) => {
 const emitTick = () => {
   const total = playback ? playback.total : 0
   eventBus.emit('playback_tick', total > 0 ? (pbTime / total) * 100 : 0)
+}
+
+// ── Laser print-head marker ───────────────────────────────────────────────────
+// A little crosshair-in-a-ring icon that sits at the current head position so the
+// cutter's location is obvious during playback. Built at unit scale and rescaled
+// every frame to stay a constant size on screen regardless of zoom.
+const HEAD_COLOR = 0x00adc6   // teal accent
+const HEAD_PX    = 11         // on-screen ring radius (px)
+
+// Custom icon: drop a `printhead.svg` (or `printhead.png`) into frontend/public/
+// and it replaces the built-in crosshair. The icon is centred on the head and
+// kept a constant size on screen. Unit footprint matches the drawn marker.
+const makeHeadMarker = () => {
+  const g = new THREE.Group()
+  const seg = []
+  const N = 36, R = 1
+  for (let i = 0; i < N; i++) {                       // ring outline
+    const a0 = (i / N) * Math.PI * 2, a1 = ((i + 1) / N) * Math.PI * 2
+    seg.push(Math.cos(a0) * R, Math.sin(a0) * R, 0, Math.cos(a1) * R, Math.sin(a1) * R, 0)
+  }
+  const inr = 0.35, outr = 1.7                         // crosshair (open centre)
+  seg.push(-outr, 0, 0, -inr, 0, 0,  inr, 0, 0, outr, 0, 0,
+            0, -outr, 0, 0, -inr, 0,  0, inr, 0, 0, outr, 0)
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(seg), 3))
+  g.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: HEAD_COLOR })))
+  g.add(new THREE.Mesh(new THREE.CircleGeometry(0.18, 16),
+                       new THREE.MeshBasicMaterial({ color: HEAD_COLOR })))  // centre dot
+  g.position.z = 0.3   // above the toolpath line and highlight
+  g.visible = false
+  loadHeadIcon(g)      // swap in a custom png/svg if one is present
+  return g
+}
+
+// Try printhead.svg then printhead.png from /public; on success replace the
+// drawn icon with a camera-facing sprite. Silent fallback to the crosshair.
+const loadHeadIcon = (group) => {
+  const loader = new THREE.TextureLoader()
+  const swap = (tex) => {
+    tex.colorSpace = THREE.SRGBColorSpace
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }))
+    sprite.scale.set(3.4, 3.4, 1)   // ≈ the crosshair footprint (unit space)
+    for (const c of [...group.children]) { group.remove(c); c.geometry?.dispose?.(); c.material?.dispose?.() }
+    group.add(sprite)
+  }
+  loader.load('/printhead.svg', swap, undefined,
+    () => loader.load('/printhead.png', swap, undefined, () => {}))
+}
+
+// Interpolate the head's XY position along the toolpath at time `t` (seconds),
+// using the per-segment time/vertex arrays stashed on `playback`.
+const headPosAt = (t) => {
+  const pb = playback
+  if (!pb || !pb.segTimes || pb.segTimes.length === 0) return null
+  const st = pb.segTimes, sv = pb.segVerts
+  const nSeg = st.length / 2
+  if (t <= st[0]) return { x: sv[0], y: sv[1] }
+  const last = (nSeg - 1) * 6
+  if (t >= st[st.length - 1]) return { x: sv[last + 3], y: sv[last + 4] }
+  let lo = 0, hi = nSeg - 1                            // binary search by end-time
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (st[mid * 2 + 1] < t) lo = mid + 1; else hi = mid
+  }
+  const t0 = st[lo * 2], t1 = st[lo * 2 + 1], o = lo * 6
+  // Clamp so time gaps (e.g. raster-as-block mode) park the marker at a segment
+  // endpoint instead of extrapolating past it.
+  const f = t1 > t0 ? Math.max(0, Math.min(1, (t - t0) / (t1 - t0))) : 0
+  return { x: sv[o] + (sv[o + 3] - sv[o]) * f, y: sv[o + 1] + (sv[o + 4] - sv[o + 1]) * f }
+}
+
+const updateHeadMarker = () => {
+  if (!headMarker) return
+  const p = playback ? headPosAt(pbTime) : null
+  if (!p) { headMarker.visible = false; return }
+  headMarker.position.set(p.x, p.y, 0.3)
+  // Keep a constant on-screen size: world units per pixel at the current zoom.
+  const worldPerPx = (VIEW_REF_HALF_H * 2) / (camera.zoom * canvHeight)
+  headMarker.scale.setScalar(HEAD_PX * worldPerPx)
+  headMarker.visible = true
 }
 
 // ── Playback controls (driven from PlayBack.vue) ──────────────────────────────
@@ -655,7 +750,12 @@ const drawObjects = (data) => {
   }
 
   if (revealMaterials.length > 0) {
-    playback = { materials: revealMaterials, total: runTime, segCount }
+    // Keep the per-segment time + vertex streams so the head marker can find the
+    // exact XY position for any playback time.
+    playback = {
+      materials: revealMaterials, total: runTime, segCount,
+      segTimes: new Float32Array(times), segVerts: new Float32Array(vertices),
+    }
   }
 
   scene.add(drawingGroup)
@@ -664,6 +764,7 @@ const drawObjects = (data) => {
   pbTime = 0
   pbPlaying = false
   revealAtTime(0)
+  updateHeadMarker()
   emitTick()
 
   // Publish stats (incl. segment count for the debug overlay).
@@ -726,6 +827,7 @@ const animate = () => {
     emitTick()
   }
 
+  updateHeadMarker()   // follow the head (also keeps a constant on-screen size)
   controls.update()
   renderer.render(scene, camera)
 }
