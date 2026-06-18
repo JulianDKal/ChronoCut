@@ -80,44 +80,220 @@ export function fixColors(data) {
   })
 }
 
-// Quantise a coordinate onto a ~0.05 mm grid so near-coincident points match.
-const quant = (v) => Math.round(v / 0.05)
+// ── Remove Doubles (smart overlap removal) ────────────────────────────────────
+// Detects red/blue stroke segments lying on top of one another — including
+// PARTIAL overlaps — and removes the redundant coverage. Blue (cut) wins over
+// red (engrave): wherever red overlaps blue, the red part is dropped because the
+// cut already removes that material there. Returns { data, removed }:
+//   data    — new object list with the redundant coverage gone
+//   removed — line segments [{x1,y1,x2,y2}] that were removed (for highlighting)
 
-// Orientation-independent key for a stroke object (so a segment and its reverse
-// hash the same). Only red/blue strokes get a key; everything else returns null.
-function dupKey(obj) {
-  if (obj.type === 'l') {
-    const cat = categorize(obj.color || '#000000')
-    if (cat !== 'red' && cat !== 'blue') return null
-    const a = `${quant(obj.x1)},${quant(obj.y1)}`
-    const b = `${quant(obj.x2)},${quant(obj.y2)}`
-    return `l:${cat}:${a < b ? a + '|' + b : b + '|' + a}`
+const OVERLAP_EPS = 0.02   // mm — ignore sub-epsilon slivers
+
+// ── 1D interval helpers (along a line) ────────────────────────────────────────
+function mergeIv(list) {
+  if (list.length === 0) return []
+  const s = list.map(x => x.slice()).sort((a, b) => a[0] - b[0])
+  const out = [s[0]]
+  for (let i = 1; i < s.length; i++) {
+    const last = out[out.length - 1]
+    if (s[i][0] <= last[1] + 1e-7) last[1] = Math.max(last[1], s[i][1])
+    else out.push(s[i])
   }
-  if (obj.type === 'c') {
-    const cat = categorize(obj.color || '#000000')
-    if (cat !== 'red' && cat !== 'blue') return null
-    const fwd = [obj.x1, obj.y1, obj.x2, obj.y2, obj.x3, obj.y3, obj.x4, obj.y4].map(quant).join(',')
-    const rev = [obj.x4, obj.y4, obj.x3, obj.y3, obj.x2, obj.y2, obj.x1, obj.y1].map(quant).join(',')
-    return `c:${cat}:${fwd < rev ? fwd : rev}`
+  return out
+}
+function subtractIv(A, B) {            // A, B merged → A minus B
+  let segs = A.map(x => x.slice())
+  for (const [b0, b1] of B) {
+    const next = []
+    for (const [a0, a1] of segs) {
+      if (b1 <= a0 || b0 >= a1) { next.push([a0, a1]); continue }   // disjoint
+      if (b0 > a0) next.push([a0, b0])
+      if (b1 < a1) next.push([b1, a1])
+    }
+    segs = next
   }
-  return null
+  return segs.filter(([s, e]) => e - s > OVERLAP_EPS)
+}
+function intersectIv(A, B) {
+  const out = []
+  for (const [a0, a1] of A) for (const [b0, b1] of B) {
+    const s = Math.max(a0, b0), e = Math.min(a1, b1)
+    if (e - s > OVERLAP_EPS) out.push([s, e])
+  }
+  return mergeIv(out)
+}
+function doubledIv(list) {             // regions covered by ≥2 of the raw intervals
+  const ev = []
+  for (const [s, e] of list) { ev.push([s, 1]); ev.push([e, -1]) }
+  ev.sort((a, b) => a[0] - b[0] || a[1] - b[1])
+  const out = []; let cov = 0, start = 0
+  for (const [x, d] of ev) {
+    const prev = cov; cov += d
+    if (prev < 2 && cov >= 2) start = x
+    else if (prev >= 2 && cov < 2 && x - start > OVERLAP_EPS) out.push([start, x])
+  }
+  return out
+}
+
+// Cluster line segments that lie on the same infinite line, robustly. Hard
+// quantisation buckets split collinear lines that straddle a grid boundary
+// (a common cause of "partial overlap not detected"); instead we cluster by
+// ADJACENCY — first by undirected angle, then by perpendicular offset — so
+// near-identical lines always end up together.
+//
+// Each returned group has: a representative direction u=(ux,uy), normal
+// n=(nx,ny), offset c, and the blue/red interval lists along the line. A point
+// at parameter t reconstructs as  t*u + c*n.
+const ANGLE_TOL = 0.012   // rad ≈ 0.7°
+const C_TOL     = 0.08    // mm perpendicular distance
+
+function clusterLines(segs) {
+  const items = segs.map(s => {
+    let a = Math.atan2(s.y2 - s.y1, s.x2 - s.x1)   // undirected angle in [0, π)
+    if (a < 0) a += Math.PI
+    if (a >= Math.PI) a -= Math.PI
+    return { s, a }
+  })
+  items.sort((p, q) => p.a - q.a)
+
+  // 1) cluster by angle (adjacency)
+  const angClusters = []
+  let cur = []
+  for (const it of items) {
+    if (cur.length && it.a - cur[cur.length - 1].a > ANGLE_TOL) { angClusters.push(cur); cur = [] }
+    cur.push(it)
+  }
+  if (cur.length) angClusters.push(cur)
+  // merge near-horizontal lines split across the 0 / π wrap
+  if (angClusters.length > 1) {
+    const first = angClusters[0], last = angClusters[angClusters.length - 1]
+    if (first[0].a <= ANGLE_TOL && Math.PI - last[last.length - 1].a <= ANGLE_TOL) {
+      angClusters[0] = last.concat(first)
+      angClusters.pop()
+    }
+  }
+
+  const groups = []
+  for (const cl of angClusters) {
+    // representative direction via doubled-angle averaging (no up/down ambiguity)
+    let s2 = 0, c2 = 0
+    for (const it of cl) { s2 += Math.sin(2 * it.a); c2 += Math.cos(2 * it.a) }
+    const arep = Math.atan2(s2, c2) / 2
+    const ux = Math.cos(arep), uy = Math.sin(arep)
+    const nx = -uy, ny = ux
+    const arr = cl.map(it => {
+      const s = it.s
+      const ta = ux * s.x1 + uy * s.y1, tb = ux * s.x2 + uy * s.y2
+      return { s, c: nx * s.x1 + ny * s.y1, iv: [Math.min(ta, tb), Math.max(ta, tb)] }
+    })
+    arr.sort((p, q) => p.c - q.c)
+    // 2) sub-cluster by perpendicular offset
+    let sub = []
+    const flush = () => {
+      if (!sub.length) return
+      const g = { ux, uy, nx, ny, c: 0, blue: [], red: [], blueColor: null, redColor: null }
+      let cSum = 0
+      for (const e of sub) {
+        cSum += e.c
+        if (e.s.cat === 'blue') { g.blue.push(e.iv); g.blueColor ??= e.s.color }
+        else                    { g.red.push(e.iv);  g.redColor  ??= e.s.color }
+      }
+      g.c = cSum / sub.length
+      groups.push(g)
+      sub = []
+    }
+    for (const e of arr) {
+      if (sub.length && e.c - sub[sub.length - 1].c > C_TOL) flush()
+      sub.push(e)
+    }
+    flush()
+  }
+  return groups
+}
+
+function curveGeom(o) {
+  const q = (v) => Math.round(v / 0.05)
+  const fwd = [o.x1, o.y1, o.x2, o.y2, o.x3, o.y3, o.x4, o.y4].map(q).join(',')
+  const rev = [o.x4, o.y4, o.x3, o.y3, o.x2, o.y2, o.x1, o.y1].map(q).join(',')
+  return fwd < rev ? fwd : rev
+}
+function curveSegs(o) {
+  const pts = flattenPrim({ t: 'C', p0: { x: o.x1, y: o.y1 }, p1: { x: o.x2, y: o.y2 },
+                            p2: { x: o.x3, y: o.y3 }, p3: { x: o.x4, y: o.y4 } })
+  const segs = []
+  for (let i = 0; i < pts.length - 1; i++) {
+    segs.push({ x1: pts[i].x, y1: pts[i].y, x2: pts[i + 1].x, y2: pts[i + 1].y })
+  }
+  return segs
 }
 
 /**
- * Find coincident (overlapping) red/blue stroke segments. The first occurrence
- * of each unique geometry is kept; every later copy is reported as a duplicate.
- * @returns {number[]} indices into `data` of the duplicate objects.
+ * Smart double removal. See header above.
+ * @returns {{ data: Array, removed: Array<{x1,y1,x2,y2}> }}
  */
-export function findDuplicates(data) {
-  const seen = new Map()
-  const dups = []
-  data.forEach((obj, i) => {
-    const key = dupKey(obj)
-    if (key === null) return
-    if (seen.has(key)) dups.push(i)
-    else seen.set(key, i)
-  })
-  return dups
+export function computeDoubleRemoval(data) {
+  const out = []        // resulting objects (kept geometry)
+  const removed = []    // removed pieces, as line segments (for highlight)
+
+  // ── Lines: cluster red/blue 'l' segments onto shared infinite lines ───────
+  const segs = []
+  for (const o of data) {
+    let cat
+    if (o.type === 'l' && ((cat = categorize(o.color || '#000000')) === 'red' || cat === 'blue')) {
+      if (Math.hypot(o.x2 - o.x1, o.y2 - o.y1) < 1e-9) continue   // zero-length → drop
+      segs.push({ cat, color: o.color, x1: o.x1, y1: o.y1, x2: o.x2, y2: o.y2 })
+    } else {
+      out.push(o)                             // non red/blue lines pass straight through
+    }
+  }
+
+  const ptOf = (g, t) => ({ x: t * g.ux + g.c * g.nx, y: t * g.uy + g.c * g.ny })
+  const emit = (g, ivls, color, sink) => {
+    for (const [t0, t1] of ivls) {
+      if (t1 - t0 <= OVERLAP_EPS) continue
+      const a = ptOf(g, t0), b = ptOf(g, t1)
+      if (sink === 'removed') removed.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y })
+      else out.push({ type: 'l', x1: a.x, y1: a.y, x2: b.x, y2: b.y, color })
+    }
+  }
+
+  for (const g of clusterLines(segs)) {
+    const blueU = mergeIv(g.blue)
+    const redU  = mergeIv(g.red)
+    const outRed = subtractIv(redU, blueU)          // red minus blue coverage
+    emit(g, blueU,  g.blueColor || '#0000ff', 'out')
+    emit(g, outRed, g.redColor  || '#ff0000', 'out')
+    // Highlight what disappeared: blue self-overlap, plus red-under-blue and red self-overlap.
+    emit(g, doubledIv(g.blue), g.blueColor, 'removed')
+    const redKilled = mergeIv([...intersectIv(redU, blueU), ...doubledIv(g.red)])
+    emit(g, redKilled, g.redColor, 'removed')
+  }
+
+  // ── Curves: exact-duplicate removal (+ red curve under an identical blue) ──
+  const blueCurveGeom = new Set()
+  for (const o of out) {
+    if (o.type === 'c' && categorize(o.color || '#000000') === 'blue') blueCurveGeom.add(curveGeom(o))
+  }
+  const keptCurve = new Set()
+  const finalOut = []
+  for (const o of out) {
+    if (o.type === 'c') {
+      const cat = categorize(o.color || '#000000')
+      if (cat === 'red' || cat === 'blue') {
+        const g = curveGeom(o)
+        const drop = (cat === 'red' && blueCurveGeom.has(g)) || keptCurve.has(`${cat}:${g}`)
+        if (drop) { for (const s of curveSegs(o)) removed.push(s); continue }
+        keptCurve.add(`${cat}:${g}`)
+      }
+    }
+    finalOut.push(o)
+  }
+
+  return {
+    data: finalOut,
+    removed: removed.filter(s => Math.hypot(s.x2 - s.x1, s.y2 - s.y1) > OVERLAP_EPS),
+  }
 }
 
 // ── Primitive helpers ─────────────────────────────────────────────────────────
@@ -393,6 +569,12 @@ export function buildToolpath(data, { optimize = false } = {}) {
       moves.push({ kind: kindOf(cat), color: p.color, category: cat, prims: p.prims })
       lastPos = p.end
     }
+  }
+
+  // Return the head to the home corner (top-left, 0,0) at the end of the job.
+  if (dist(lastPos, { x: 0, y: 0 }) > 0.1) {
+    moves.push({ kind: 'travel', color: '#888888', a: { ...lastPos }, b: { x: 0, y: 0 } })
+    lastPos = { x: 0, y: 0 }
   }
 
   // Stats + time estimate.

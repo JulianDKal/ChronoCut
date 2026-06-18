@@ -18,7 +18,7 @@ import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import * as THREE from 'three'
 import eventBus from '../eventBus'
-import { buildToolpath, flattenPrim, isGreen, SPEED_MM_S, fixColors, findDuplicates } from '../toolpath'
+import { buildToolpath, flattenPrim, isGreen, SPEED_MM_S, fixColors, computeDoubleRemoval } from '../toolpath'
 
 const container = ref(null)
 const canvas    = ref(null)
@@ -139,17 +139,9 @@ const applyTheme = () => {
 const handleThemeChanged = (dark) => {
   isDark = !!dark
   applyTheme()
-  // Rebuild the design so line/fill colours re-adjust for the new theme, while
-  // keeping the current playback position.
-  if (currentData) {
-    const savedTime = pbTime
-    const wasPlaying = pbPlaying
-    drawObjects(currentData)
-    pbTime = playback ? Math.min(savedTime, playback.total) : 0
-    pbPlaying = wasPlaying
-    revealAtTime(pbTime)
-    emitTick()
-  }
+  // Rebuild the design so line/fill colours re-adjust for the new theme.
+  // drawObjects preserves the current playback position by default.
+  if (currentData) drawObjects(currentData)
 }
 
 // ── Camera ────────────────────────────────────────────────────────────────────
@@ -307,7 +299,7 @@ const handleCutterSelected = (cutter) => {
 const handleLinesUpdate = (lines) => {
   currentData = lines
   clearHighlight()
-  drawObjects(lines)
+  drawObjects(lines, { resetPlayback: true })   // new design → timeline back to 0
   // Centre + fit the view on the freshly loaded design.
   contentBox = computeContentBBox(lines)
   frameBox(contentBox || bedBox())
@@ -349,38 +341,26 @@ const handleFixColors = () => {
 // armed state; we just report the count back.
 const handleDoublesDetect = () => {
   if (!currentData) { eventBus.emit('doubles-result', { count: 0 }); return }
-  const dups = findDuplicates(currentData)
-  drawHighlight(dups)
-  eventBus.emit('doubles-result', { count: dups.length, fromDetect: true })
+  const { removed } = computeDoubleRemoval(currentData)
+  drawHighlight(removed)
+  eventBus.emit('doubles-result', { count: removed.length, fromDetect: true })
 }
 
 const handleDoublesRemove = () => {
   if (!currentData) return
-  const dups = new Set(findDuplicates(currentData))
-  if (dups.size > 0) currentData = currentData.filter((_, i) => !dups.has(i))
+  const { data, removed } = computeDoubleRemoval(currentData)
+  if (removed.length > 0) currentData = data
   clearHighlight()
   drawObjects(currentData)
   eventBus.emit('doubles-result', { count: 0 })
 }
 
-// Magenta overlay over the duplicate strokes, drawn above everything else.
-const drawHighlight = (indices) => {
+// Magenta overlay over the removed pieces, drawn above everything else.
+const drawHighlight = (segs) => {
   clearHighlight()
-  if (!currentData || indices.length === 0) return
+  if (!segs || segs.length === 0) return
   const verts = []
-  for (const i of indices) {
-    const o = currentData[i]
-    let pts = null
-    if (o.type === 'l') pts = [{ x: o.x1, y: o.y1 }, { x: o.x2, y: o.y2 }]
-    else if (o.type === 'c') pts = flattenPrim({
-      t: 'C', p0: { x: o.x1, y: o.y1 }, p1: { x: o.x2, y: o.y2 },
-      p2: { x: o.x3, y: o.y3 }, p3: { x: o.x4, y: o.y4 },
-    })
-    if (!pts) continue
-    for (let k = 0; k < pts.length - 1; k++) {
-      verts.push(pts[k].x, pts[k].y, 0, pts[k + 1].x, pts[k + 1].y, 0)
-    }
-  }
+  for (const s of segs) verts.push(s.x1, s.y1, 0, s.x2, s.y2, 0)
   if (!verts.length) return
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3))
@@ -515,8 +495,15 @@ const handleSeek = (progress) => {
 }
 
 // ── Draw imported geometry ────────────────────────────────────────────────────
-const drawObjects = (data) => {
+const drawObjects = (data, { resetPlayback = false } = {}) => {
   if (!data || data.length === 0) return
+  // Preserve the current playback position across rebuilds (toggles, edits,
+  // theme) so changing a setting doesn't snap the timeline back to the start.
+  // Only a fresh file load resets it.
+  const prevTotal = playback ? playback.total : 0
+  const keepPos   = !resetPlayback && prevTotal > 0
+  const prevFrac  = keepPos ? Math.min(1, Math.max(0, pbTime / prevTotal)) : 0
+  const prevPlaying = keepPos && pbPlaying
   if (drawingGroup) scene.remove(drawingGroup)
 
   drawingGroup = new THREE.Group()
@@ -760,10 +747,10 @@ const drawObjects = (data) => {
 
   scene.add(drawingGroup)
 
-  // Reset the playback clock to the start whenever the geometry is rebuilt.
-  pbTime = 0
-  pbPlaying = false
-  revealAtTime(0)
+  // Restore the previous playback position (or start from 0 on a fresh load).
+  pbTime = playback ? playback.total * prevFrac : 0
+  pbPlaying = prevPlaying && !!playback
+  revealAtTime(pbTime)
   updateHeadMarker()
   emitTick()
 
