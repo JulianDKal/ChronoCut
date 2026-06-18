@@ -51,6 +51,75 @@ export function kindOf(category) {
   return 'engrave' // red, green
 }
 
+// ── Edits (Fix Colors / Remove Doubles) ───────────────────────────────────────
+// Both operate on the raw extraction object list and return new data so the
+// caller can swap it in as the single source of truth (and export it).
+
+// Canonical pure colours each near-colour snaps to.
+const PURE_RED   = '#ff0000'
+const PURE_BLUE  = '#0000ff'
+const PURE_GREEN = '#00ff00'
+
+/**
+ * Snap near-pure colours to their canonical value, reusing the same
+ * categorisation that drives cut/engrave routing:
+ *   strokes (l/c)  almost-red  → #ff0000,  almost-blue → #0000ff
+ *   fills   (fp)   almost-green → #00ff00
+ * Everything else is left untouched. Returns a new array (shallow-copied items).
+ */
+export function fixColors(data) {
+  return data.map((obj) => {
+    if (obj.type === 'l' || obj.type === 'c') {
+      const cat = categorize(obj.color || '#000000')
+      if (cat === 'red')  return { ...obj, color: PURE_RED }
+      if (cat === 'blue') return { ...obj, color: PURE_BLUE }
+    } else if (obj.type === 'fp') {
+      if (isGreen(obj.fill)) return { ...obj, fill: PURE_GREEN }
+    }
+    return obj
+  })
+}
+
+// Quantise a coordinate onto a ~0.05 mm grid so near-coincident points match.
+const quant = (v) => Math.round(v / 0.05)
+
+// Orientation-independent key for a stroke object (so a segment and its reverse
+// hash the same). Only red/blue strokes get a key; everything else returns null.
+function dupKey(obj) {
+  if (obj.type === 'l') {
+    const cat = categorize(obj.color || '#000000')
+    if (cat !== 'red' && cat !== 'blue') return null
+    const a = `${quant(obj.x1)},${quant(obj.y1)}`
+    const b = `${quant(obj.x2)},${quant(obj.y2)}`
+    return `l:${cat}:${a < b ? a + '|' + b : b + '|' + a}`
+  }
+  if (obj.type === 'c') {
+    const cat = categorize(obj.color || '#000000')
+    if (cat !== 'red' && cat !== 'blue') return null
+    const fwd = [obj.x1, obj.y1, obj.x2, obj.y2, obj.x3, obj.y3, obj.x4, obj.y4].map(quant).join(',')
+    const rev = [obj.x4, obj.y4, obj.x3, obj.y3, obj.x2, obj.y2, obj.x1, obj.y1].map(quant).join(',')
+    return `c:${cat}:${fwd < rev ? fwd : rev}`
+  }
+  return null
+}
+
+/**
+ * Find coincident (overlapping) red/blue stroke segments. The first occurrence
+ * of each unique geometry is kept; every later copy is reported as a duplicate.
+ * @returns {number[]} indices into `data` of the duplicate objects.
+ */
+export function findDuplicates(data) {
+  const seen = new Map()
+  const dups = []
+  data.forEach((obj, i) => {
+    const key = dupKey(obj)
+    if (key === null) return
+    if (seen.has(key)) dups.push(i)
+    else seen.set(key, i)
+  })
+  return dups
+}
+
 // ── Primitive helpers ─────────────────────────────────────────────────────────
 const primStart = (p) => (p.t === 'L' ? p.a : p.p0)
 const primEnd   = (p) => (p.t === 'L' ? p.b : p.p3)

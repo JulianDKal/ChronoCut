@@ -32,12 +32,9 @@ const handleDownload = () => {
 }
 
 const onStats = (stats) => { elapsedTime.value = Math.round(stats?.totalTime ?? 0) }
-const updateTime = (newTime) => { elapsedTime.value = newTime }
 
 onMounted(() => eventBus.on('toolpath-stats', onStats))
 onBeforeUnmount(() => eventBus.off('toolpath-stats', onStats))
-
-defineExpose({ updateTime })
 </script>
 
 <style scoped>

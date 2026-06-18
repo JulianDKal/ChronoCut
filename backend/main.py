@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from api import api_pdf_upload, api_pdf_extraction, api_save_pdf
+from api import api_pdf_extraction, api_save_pdf
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
@@ -28,7 +28,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(api_pdf_upload.router, prefix="/api")
 app.include_router(api_pdf_extraction.router, prefix="/api")
 app.include_router(api_save_pdf.router, prefix="/api")
 

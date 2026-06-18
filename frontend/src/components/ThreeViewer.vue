@@ -18,13 +18,14 @@ import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import * as THREE from 'three'
 import eventBus from '../eventBus'
-import { buildToolpath, flattenPrim, isGreen, SPEED_MM_S } from '../toolpath'
+import { buildToolpath, flattenPrim, isGreen, SPEED_MM_S, fixColors, findDuplicates } from '../toolpath'
 
 const container = ref(null)
 const canvas    = ref(null)
 let scene, camera, renderer, controls
 let rectangleFrame
 let drawingGroup       // THREE.Group for imported geometry
+let highlightGroup     // overlay group for the Remove-Doubles highlight
 let canvWidth, canvHeight
 const VIEW_REF_HALF_H = 400  // world half-height (mm) of the frustum at zoom 1
 let contentBox = null        // bbox of the last loaded design (for re-framing)
@@ -290,6 +291,7 @@ const handleCutterSelected = (cutter) => {
 // ── Lines / objects update ────────────────────────────────────────────────────
 const handleLinesUpdate = (lines) => {
   currentData = lines
+  clearHighlight()
   drawObjects(lines)
   // Centre + fit the view on the freshly loaded design.
   contentBox = computeContentBBox(lines)
@@ -313,6 +315,72 @@ const handleRasterModeChanged = (enabled) => {
 const handleDebugColorsChanged = (enabled) => {
   debugColors = !!enabled
   if (currentData) drawObjects(currentData)
+}
+
+// ── Edits: Fix Colors / Remove Doubles ────────────────────────────────────────
+// Both mutate currentData (the single source of truth) and rebuild, so the
+// changes show in the viewer AND flow into the PDF download.
+
+const handleFixColors = () => {
+  if (!currentData) return
+  currentData = fixColors(currentData)
+  clearHighlight()
+  eventBus.emit('doubles-result', { count: 0 })  // any armed double-removal resets
+  drawObjects(currentData)
+}
+
+// First click: find + highlight coincident red/blue strokes. Second click
+// (sent as 'doubles-remove' once armed) deletes them. The Sidebar button owns the
+// armed state; we just report the count back.
+const handleDoublesDetect = () => {
+  if (!currentData) { eventBus.emit('doubles-result', { count: 0 }); return }
+  const dups = findDuplicates(currentData)
+  drawHighlight(dups)
+  eventBus.emit('doubles-result', { count: dups.length, fromDetect: true })
+}
+
+const handleDoublesRemove = () => {
+  if (!currentData) return
+  const dups = new Set(findDuplicates(currentData))
+  if (dups.size > 0) currentData = currentData.filter((_, i) => !dups.has(i))
+  clearHighlight()
+  drawObjects(currentData)
+  eventBus.emit('doubles-result', { count: 0 })
+}
+
+// Magenta overlay over the duplicate strokes, drawn above everything else.
+const drawHighlight = (indices) => {
+  clearHighlight()
+  if (!currentData || indices.length === 0) return
+  const verts = []
+  for (const i of indices) {
+    const o = currentData[i]
+    let pts = null
+    if (o.type === 'l') pts = [{ x: o.x1, y: o.y1 }, { x: o.x2, y: o.y2 }]
+    else if (o.type === 'c') pts = flattenPrim({
+      t: 'C', p0: { x: o.x1, y: o.y1 }, p1: { x: o.x2, y: o.y2 },
+      p2: { x: o.x3, y: o.y3 }, p3: { x: o.x4, y: o.y4 },
+    })
+    if (!pts) continue
+    for (let k = 0; k < pts.length - 1; k++) {
+      verts.push(pts[k].x, pts[k].y, 0, pts[k + 1].x, pts[k + 1].y, 0)
+    }
+  }
+  if (!verts.length) return
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3))
+  const line = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0xff00ff }))
+  line.position.z = 0.2   // above the toolpath line (z 0.05) and content
+  highlightGroup = new THREE.Group()
+  highlightGroup.add(line)
+  scene.add(highlightGroup)
+}
+
+const clearHighlight = () => {
+  if (!highlightGroup) return
+  scene.remove(highlightGroup)
+  highlightGroup.traverse(o => { o.geometry?.dispose(); o.material?.dispose() })
+  highlightGroup = null
 }
 
 // ── Playback progress ─────────────────────────────────────────────────────────
@@ -423,10 +491,14 @@ const drawObjects = (data) => {
   const vertices = []     // xyz per vertex (2 per segment)
   const colors   = []     // rgb per vertex
   const times    = []     // cumulative time (s) at each vertex
+  const dashes   = []     // per vertex: 1 = dashed travel, 0 = solid beam-on
+  const dists    = []     // per vertex: world distance (mm) along the segment
   const rasterBlocks = [] // { bbox, t0, t1, color } when "raster as block" is on
   let runTime = 0         // running time along the toolpath
 
-  const pushSeg = (x1, y1, x2, y2, rgb, dur) => {
+  // dash/segLen default to a solid (non-dashed) segment; travels pass dash=1 and
+  // the full length so the shader can dash them in world space.
+  const pushSeg = (x1, y1, x2, y2, rgb, dur, dash = 0, segLen = 0) => {
     const t0 = runTime, t1 = runTime + dur
     runTime = t1
     // Debug: give each segment its own random colour so they're easy to count.
@@ -434,6 +506,8 @@ const drawObjects = (data) => {
     vertices.push(x1, y1, 0, x2, y2, 0)
     colors.push(c[0], c[1], c[2], c[0], c[1], c[2])
     times.push(t0, t1)
+    dashes.push(dash, dash)
+    dists.push(0, segLen)
   }
 
   for (const m of moves) {
@@ -452,23 +526,14 @@ const drawObjects = (data) => {
     }
 
     if (m.kind === 'travel') {
-      // Dotted travel: emit on-dashes only, distributing the full travel time
-      // across them so reveal timing stays accurate despite the gaps.
+      // Travel ("Leerweg"): ONE segment, dashed in the fragment shader. aDist
+      // carries the world-space distance along it so the shader punches out the
+      // gaps — far cheaper than emitting a segment per dash. The whole travel
+      // still consumes its true time (reveal interpolates linearly across it).
       const a = m.a, b = m.b
       const full = Math.hypot(b.x - a.x, b.y - a.y)
       if (full < 1e-6) continue
-      const ux = (b.x - a.x) / full, uy = (b.y - a.y) / full
-      const rgb = lineRGB(m.color)
-      const dashes = []
-      for (let d = 0; d < full; d += TRAVEL_DASH + TRAVEL_GAP) {
-        dashes.push([d, Math.min(d + TRAVEL_DASH, full)])
-      }
-      const dashLen = dashes.reduce((s, [s0, s1]) => s + (s1 - s0), 0) || full
-      const fullTime = full / speed
-      for (const [s0, s1] of dashes) {
-        pushSeg(a.x + ux*s0, a.y + uy*s0, a.x + ux*s1, a.y + uy*s1, rgb,
-                fullTime * ((s1 - s0) / dashLen))
-      }
+      pushSeg(a.x, a.y, b.x, b.y, lineRGB(m.color), full / speed, 1, full)
     } else {
       // Beam-on path: tessellate each primitive (lines stay lines; beziers are
       // adaptively flattened by arc length so they render as smooth curves).
@@ -497,6 +562,8 @@ const drawObjects = (data) => {
     geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertices), 3))
     geo.setAttribute('color',    new THREE.BufferAttribute(new Float32Array(colors), 3))
     geo.setAttribute('aTime',    new THREE.BufferAttribute(new Float32Array(times), 1))
+    geo.setAttribute('aDash',    new THREE.BufferAttribute(new Float32Array(dashes), 1))
+    geo.setAttribute('aDist',    new THREE.BufferAttribute(new Float32Array(dists), 1))
 
     const mat = new THREE.ShaderMaterial({
       transparent: true,
@@ -508,11 +575,17 @@ const drawObjects = (data) => {
       vertexShader: `
         attribute vec3 color;
         attribute float aTime;
+        attribute float aDash;
+        attribute float aDist;
         varying vec3 vColor;
         varying float vTime;
+        varying float vDash;
+        varying float vDist;
         void main() {
           vColor = color;
           vTime = aTime;
+          vDash = aDash;
+          vDist = aDist;
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
       `,
@@ -521,7 +594,11 @@ const drawObjects = (data) => {
         uniform float uPreviewAlpha;
         varying vec3 vColor;
         varying float vTime;
+        varying float vDash;
+        varying float vDist;
         void main() {
+          // Dashed travel: punch out the gaps in world space (mm).
+          if (vDash > 0.5 && mod(vDist, ${(TRAVEL_DASH + TRAVEL_GAP).toFixed(1)}) > ${TRAVEL_DASH.toFixed(1)}) discard;
           float a = vTime <= uProgress ? 1.0 : uPreviewAlpha;
           gl_FragColor = vec4(vColor, a);
         }
@@ -600,8 +677,15 @@ const drawObjects = (data) => {
 
 // ── PDF download ──────────────────────────────────────────────────────────────
 async function handleDownloadRequest() {
+  if (!currentData) return
   try {
-    const response = await fetch('/api/save_pdf')
+    // Send the CURRENT (edited) drawing so Fix Colors / Remove Doubles are
+    // reflected, and the backend can rebuild a faithful PDF of the whole design.
+    const response = await fetch('/api/save_pdf', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(currentData),
+    })
     if (!response.ok) throw new Error('Failed to save PDF')
     const blob = await response.blob()
     const url  = window.URL.createObjectURL(blob)
@@ -663,6 +747,9 @@ onMounted(() => {
   eventBus.on('optimize-changed',   handleOptimizeChanged)
   eventBus.on('raster-mode-changed', handleRasterModeChanged)
   eventBus.on('debug-colors-changed', handleDebugColorsChanged)
+  eventBus.on('fix-colors',         handleFixColors)
+  eventBus.on('doubles-detect',     handleDoublesDetect)
+  eventBus.on('doubles-remove',     handleDoublesRemove)
   eventBus.on('playback_playpause', handlePlayPause)
   eventBus.on('playback_speed',     handleSpeed)
   eventBus.on('playback_seek',      handleSeek)
@@ -677,6 +764,9 @@ onBeforeUnmount(() => {
   eventBus.off('optimize-changed',   handleOptimizeChanged)
   eventBus.off('raster-mode-changed', handleRasterModeChanged)
   eventBus.off('debug-colors-changed', handleDebugColorsChanged)
+  eventBus.off('fix-colors',         handleFixColors)
+  eventBus.off('doubles-detect',     handleDoublesDetect)
+  eventBus.off('doubles-remove',     handleDoublesRemove)
   eventBus.off('playback_playpause', handlePlayPause)
   eventBus.off('playback_speed',     handleSpeed)
   eventBus.off('playback_seek',      handleSeek)

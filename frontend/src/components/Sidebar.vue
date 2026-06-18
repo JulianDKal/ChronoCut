@@ -66,10 +66,17 @@
 
     <!-- Bottom Button Group -->
     <div class="button-group bottom-buttons">
-      <button class="sidebar-btn" @click="handleRemoveDoubles" :disabled="isLoading">
-        <span class="btn-text">Remove Doubles</span>
+      <button
+        class="sidebar-btn"
+        :class="{ armed: doublesArmed }"
+        @click="handleRemoveDoubles"
+        :disabled="isLoading"
+        :title="'Sucht deckungsgleiche rote/blaue Schnittlinien. 1. Klick hebt sie hervor, 2. Klick entfernt sie.'"
+      >
+        <span class="btn-text">{{ removeDoublesLabel }}</span>
       </button>
-      <button class="sidebar-btn" @click="handleFixColors" :disabled="isLoading">
+      <button class="sidebar-btn" @click="handleFixColors" :disabled="isLoading"
+        :title="'Snappt fast-rote/-blaue Linien und fast-grüne Flächen auf reines Rot/Blau/Grün.'">
         <span class="btn-text">Fix Colors</span>
       </button>
     </div>
@@ -77,7 +84,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import eventBus from '../eventBus'
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -165,6 +172,7 @@ const uploadFile = async (file) => {
 
     const result = await response.json()
     eventBus.emit('lines-updated', result.lines)
+    resetDoubles()   // a fresh design clears any armed double-removal state
   } catch (error) {
     console.error('Upload error:', error)
     alert('Error uploading file: ' + error.message)
@@ -173,19 +181,51 @@ const uploadFile = async (file) => {
   }
 }
 
-// ── Misc handlers ─────────────────────────────────────────────────────────────
-const handleRemoveDoubles = () => console.log('Remove Doubles clicked')
-const handleFixColors     = () => console.log('Fix Colors clicked')
+// ── Remove Doubles (two-click: highlight → confirm) ───────────────────────────
+// First click detects + highlights coincident red/blue cut lines (ThreeViewer
+// reports the count back); the button then arms, and a second click removes them.
+const doublesArmed = ref(false)
+const doublesCount = ref(0)
+const doublesHint  = ref('')   // brief "Keine Dopplungen" note
+
+const removeDoublesLabel = computed(() => {
+  if (doublesArmed.value) {
+    return `Entferne ${doublesCount.value} Dopplung${doublesCount.value === 1 ? '' : 'en'}`
+  }
+  return doublesHint.value || 'Remove Doubles'
+})
+
+const handleRemoveDoubles = () => {
+  eventBus.emit(doublesArmed.value ? 'doubles-remove' : 'doubles-detect')
+}
+
+const onDoublesResult = ({ count, fromDetect }) => {
+  doublesCount.value = count
+  doublesArmed.value = count > 0
+  // Only nudge "none found" when the user actually ran a detection — not when the
+  // state was reset by Fix Colors or after a removal.
+  if (count === 0 && fromDetect) {
+    doublesHint.value = 'Keine Dopplungen'
+    setTimeout(() => { doublesHint.value = '' }, 1500)
+  }
+}
+
+const resetDoubles = () => { doublesArmed.value = false; doublesCount.value = 0; doublesHint.value = '' }
+
+// ── Fix Colors ────────────────────────────────────────────────────────────────
+const handleFixColors = () => eventBus.emit('fix-colors')
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 onMounted(() => {
   document.addEventListener('click', handleDocClick)
+  eventBus.on('doubles-result', onDoublesResult)
   // Defer so ThreeViewer has time to register its listener first
   setTimeout(() => selectCutter(cutters[0]), 0)
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', handleDocClick)
+  eventBus.off('doubles-result', onDoublesResult)
 })
 </script>
 
@@ -258,6 +298,12 @@ onBeforeUnmount(() => {
   transition: background 0.2s;
 }
 .sidebar-btn:hover:not(:disabled) { background: var(--hover-bg); }
+/* Armed state: duplicates are highlighted, next click removes them. */
+.sidebar-btn.armed {
+  border-color: #ff00ff;
+  background: rgba(255, 0, 255, 0.08);
+}
+.sidebar-btn.armed .btn-text { color: #c800c8; font-weight: 600; }
 .btn-text { flex: 1; text-align: left; color: var(--text-strong); }
 
 /* ── Dropdown ──────────────────────────────────────────────── */

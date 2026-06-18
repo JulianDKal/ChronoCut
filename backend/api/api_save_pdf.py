@@ -1,70 +1,159 @@
+import base64
 import pymupdf
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 from fastapi.responses import FileResponse
 from typing import List, Dict, Any
-import uuid
 from pathlib import Path
-import json
+
+from .api_pdf_extraction import MM_PER_PT
 
 router = APIRouter()
 
-# Inside your FastAPI endpoint
-@router.get("/save_pdf")
-async def create_pdf_from_json():
-    with open(Path('uploads/page_0_lines.json'), 'r') as file:
-        lines = json.load(file)
-    # for line in lines:
-    #     print(line)
-    output_path = Path('uploads/laser_drawing.pdf')
-    create_pdf_from_lines(lines, output_path)
-    
-    return FileResponse(output_path, filename="laser_drawing.pdf")
+# Default stroke width for cut/engrave lines (the extraction does not capture the
+# original widths). Thin so the geometry stays faithful.
+STROKE_WIDTH_PT = 0.5
 
 
-def create_pdf_from_lines(line_data, output_path="output.pdf"):
-    # Create a new PDF document and add a blank page
+# ── Coordinate helpers ────────────────────────────────────────────────────────
+# Inverse of norm_x / norm_y in api_pdf_extraction: viewer mm (origin top-left,
+# y negative downward) → PDF/MuPDF points (origin top-left, y positive downward).
+
+def mm_to_pt_x(x_mm: float) -> float:
+    return x_mm / MM_PER_PT
+
+def mm_to_pt_y(y_mm: float) -> float:
+    return -y_mm / MM_PER_PT
+
+def hex_to_rgb(color: str):
+    c = color or "#000000"
+    return (int(c[1:3], 16) / 255.0, int(c[3:5], 16) / 255.0, int(c[5:7], 16) / 255.0)
+
+
+# ── Endpoint ──────────────────────────────────────────────────────────────────
+
+@router.post("/save_pdf")
+async def create_pdf_from_json(objects: List[Dict[str, Any]] = Body(...)):
+    """Rebuild a PDF from the CURRENT (edited) drawing objects sent by the viewer.
+
+    The body is the same object list produced by /pdf_extraction (l / c / fp / img
+    / mbox), but possibly after Fix Colors / Remove Doubles. The output PDF
+    reproduces everything the source had — vectors, text outlines and images —
+    just corrected.
+    """
+    if not objects:
+        raise HTTPException(status_code=400, detail="No drawing objects provided")
+
+    out_dir = Path("uploads")
+    out_dir.mkdir(exist_ok=True)
+    output_path = out_dir / "laser_drawing.pdf"
+
+    try:
+        build_pdf(objects, output_path)
+    except Exception as e:
+        print(f"[save_pdf] build failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to build PDF: {e}")
+
+    return FileResponse(output_path, filename="laser_drawing.pdf", media_type="application/pdf")
+
+
+# ── PDF builder ───────────────────────────────────────────────────────────────
+
+def build_pdf(objects: List[Dict[str, Any]], output_path: Path) -> Path:
+    # Page size from the mbox entry (mm → pt); fall back to A4 if absent.
+    page_w_pt, page_h_pt = 595.0, 842.0
+    for o in objects:
+        if o.get("type") == "mbox":
+            page_w_pt = mm_to_pt_x(o["w"])
+            page_h_pt = mm_to_pt_x(o["h"])   # mbox dims are positive mm
+            break
+
     doc = pymupdf.open()
+    page = doc.new_page(width=page_w_pt, height=page_h_pt)
 
-    # Get page dimensions (default A4: 595 x 842 points)
-    page_width = 2880.0000
-    page_height = 2015.4331
+    # Images first (background), then vector geometry on top.
+    for o in objects:
+        if o.get("type") == "img":
+            _insert_image(page, o)
 
-    # rect = pymupdf.Rect(0, 0, page_width, page_height)
-    page = doc.new_page(width=page_width, height=page_height)
-    
     shape = page.new_shape()
-    
-    for line in line_data:
-        if line['type'] == 'l':
-            x1 = line['x1']
-            y1 = line['y1'] 
-            x2 = line['x2']
-            y2 = line['y2']
-            shape.draw_line((x1, y1), (x2, y2))
-        if line['type'] == 'c':
-            x1 = line['x1']
-            y1 = line['y1'] 
-            x2 = line['x2']
-            y2 = line['y2']
-            x3 = line['x3']
-            y3 = line['y3']
-            x4 = line['x4']
-            y4 = line['y4']
-            shape.draw_bezier((x1, y1), (x2, y2), (x3, y3), (x4, y4))
+    for o in objects:
+        t = o.get("type")
+        if t == "fp":
+            _draw_fill(shape, o)
+        elif t in ("l", "c"):
+            _draw_stroke(shape, o)
+    shape.commit()
 
-        # Get color (default to black if not specified)
-        color = line.get('color', '#000000')
-        # Convert hex to RGB tuple (values 0-1)
-        r = int(color[1:3], 16) / 255.0
-        g = int(color[3:5], 16) / 255.0
-        b = int(color[5:7], 16) / 255.0
-        
-        shape.finish(color=(r, g, b), width=0.1, closePath=False)
-    
-    shape.commit() 
-    
-    # Save the PDF
     doc.save(output_path)
     doc.close()
-    
     return output_path
+
+
+def _draw_stroke(shape, o: Dict[str, Any]):
+    color = hex_to_rgb(o.get("color", "#000000"))
+    if o["type"] == "l":
+        shape.draw_line(
+            (mm_to_pt_x(o["x1"]), mm_to_pt_y(o["y1"])),
+            (mm_to_pt_x(o["x2"]), mm_to_pt_y(o["y2"])),
+        )
+    else:  # cubic bezier
+        shape.draw_bezier(
+            (mm_to_pt_x(o["x1"]), mm_to_pt_y(o["y1"])),
+            (mm_to_pt_x(o["x2"]), mm_to_pt_y(o["y2"])),
+            (mm_to_pt_x(o["x3"]), mm_to_pt_y(o["y3"])),
+            (mm_to_pt_x(o["x4"]), mm_to_pt_y(o["y4"])),
+        )
+    shape.finish(color=color, width=STROKE_WIDTH_PT, closePath=False)
+
+
+def _draw_fill(shape, o: Dict[str, Any]):
+    """Redraw a filled path (text/shape) from its M/L/C/Z commands and fill it.
+
+    Sub-paths are drawn without connecting strokes (a new 'M' just moves the pen);
+    even-odd fill makes holes (letter counters) render regardless of winding.
+    """
+    fill = hex_to_rgb(o.get("fill", "#000000"))
+    cur = None
+    drew = False
+    for c in o.get("path", []):
+        cmd = c.get("cmd")
+        if cmd == "M":
+            cur = (mm_to_pt_x(c["x"]), mm_to_pt_y(c["y"]))
+        elif cmd == "L":
+            p = (mm_to_pt_x(c["x"]), mm_to_pt_y(c["y"]))
+            if cur is not None:
+                shape.draw_line(cur, p)
+                drew = True
+            cur = p
+        elif cmd == "C":
+            if cur is not None:
+                p = (mm_to_pt_x(c["x"]), mm_to_pt_y(c["y"]))
+                shape.draw_bezier(
+                    cur,
+                    (mm_to_pt_x(c["x1"]), mm_to_pt_y(c["y1"])),
+                    (mm_to_pt_x(c["x2"]), mm_to_pt_y(c["y2"])),
+                    p,
+                )
+                drew = True
+                cur = p
+        # 'Z' is implicit: closePath=True in finish closes each sub-path.
+    if drew:
+        shape.finish(color=None, fill=fill, even_odd=True, closePath=True)
+
+
+def _insert_image(page, o: Dict[str, Any]):
+    data = o.get("data", "")
+    if "," not in data:
+        return
+    try:
+        raw = base64.b64decode(data.split(",", 1)[1])
+    except Exception as e:
+        print(f"[save_pdf] image decode failed: {e}")
+        return
+    left = mm_to_pt_x(o["x"])
+    top = mm_to_pt_y(o["y"])               # top-left corner
+    rect = pymupdf.Rect(left, top, left + mm_to_pt_x(o["w"]), top + mm_to_pt_x(o["h"]))
+    try:
+        page.insert_image(rect, stream=raw)
+    except Exception as e:
+        print(f"[save_pdf] insert_image failed: {e}")

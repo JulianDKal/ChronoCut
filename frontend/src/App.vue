@@ -53,16 +53,22 @@ const onLinesUpdated = () => { hasContent.value = true }
 const segmentCount = ref(0)
 const onStats = (stats) => { segmentCount.value = stats?.segments ?? 0 }
 
-// Dark mode (the viewer reacts via the 'theme-changed' event).
-const isDark = ref(false)
+// Dark mode (the viewer reacts via the 'theme-changed' event). The preference is
+// persisted across reloads in localStorage.
+const THEME_KEY = 'chronocut-theme'
+const isDark = ref(localStorage.getItem(THEME_KEY) === 'dark')
 const toggleTheme = () => {
   isDark.value = !isDark.value
+  localStorage.setItem(THEME_KEY, isDark.value ? 'dark' : 'light')
   eventBus.emit('theme-changed', isDark.value)
 }
 
 onMounted(() => {
   eventBus.on('lines-updated', onLinesUpdated)
   eventBus.on('toolpath-stats', onStats)
+  // Sync the viewer to the stored theme. This runs after the child ThreeViewer's
+  // onMounted, so its 'theme-changed' listener is already registered.
+  if (isDark.value) eventBus.emit('theme-changed', true)
 })
 onBeforeUnmount(() => {
   eventBus.off('lines-updated', onLinesUpdated)
