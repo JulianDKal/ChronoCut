@@ -24,7 +24,7 @@ export const SPEED_MM_S = {
 // Raster (boustrophedon engraving) parameters — green and grayscale content is
 // engraved by scanning horizontally back and forth over its bounding box.
 const RASTER_PITCH    = 0.6   // mm between scan lines (vertical step)
-const RASTER_OVERSCAN = 6     // mm of accel/decel space added on each side
+const RASTER_OVERSCAN = 50    // mm of accel/decel space added on each side (5 cm)
 const RASTER_MAX_ROWS = 1200  // safety cap (pitch grows if a region is huge)
 const RASTER_GREEN    = '#00a000'  // colour of green-region scan lines
 const RASTER_GRAY     = '#555555'  // colour of grayscale-image scan lines
@@ -41,6 +41,160 @@ export function rampedTime(L, v, a) {
   const dAcc = (v * v) / (2 * a)          // distance to ramp 0→v
   if (2 * dAcc <= L) return 2 * (v / a) + (L - 2 * dAcc) / v   // trapezoid
   return 2 * Math.sqrt(L / a)             // triangle (peak < v)
+}
+
+// Direction change (between consecutive segments) sharper than this forces the
+// head to a full stop — the velocity profile restarts from rest. Catches raster
+// turnarounds (180°) and the vertical step between scan rows (90°), which is
+// exactly where a real machine decelerates, stops and reverses.
+const CORNER_COS = Math.cos((60 * Math.PI) / 180)   // > 60° turn ⇒ stop
+
+// Speed (mm/s) at distance s along a run of length S that starts and ends at
+// rest, with target speed v and acceleration a (trapezoid, or triangle when the
+// run is too short to reach v).
+function speedAt(s, S, v, a) {
+  const dAcc = (v * v) / (2 * a)
+  if (2 * dAcc <= S) {
+    if (s < dAcc)     return Math.sqrt(2 * a * s)
+    if (s > S - dAcc) return Math.sqrt(Math.max(0, 2 * a * (S - s)))
+    return v
+  }
+  const half = S / 2
+  return s <= half ? Math.sqrt(2 * a * s) : Math.sqrt(Math.max(0, 2 * a * (S - s)))
+}
+
+// Time (s) + average speed (mm/s) to traverse the sub-interval [s0,s1] of a run
+// of length S that starts/ends at rest. Split at the trapezoid/triangle phase
+// boundaries; within an accel/decel phase Δt = |Δv| / a, within cruise Δt = L/v.
+function profileSeg(s0, s1, S, v, a) {
+  const len = s1 - s0
+  if (len <= 0) return { dt: 0, vavg: v }
+  if (!a || a <= 0 || !v || v <= 0) return { dt: v > 0 ? len / v : 0, vavg: v }
+  const dAcc = (v * v) / (2 * a)
+  const bounds = 2 * dAcc <= S ? [dAcc, S - dAcc] : [S / 2]
+  const pts = [s0]
+  for (const b of bounds) if (b > s0 && b < s1) pts.push(b)
+  pts.push(s1)
+  let dt = 0
+  for (let k = 0; k < pts.length - 1; k++) {
+    const x0 = pts[k], x1 = pts[k + 1], xm = (x0 + x1) / 2
+    const cruise = 2 * dAcc <= S && xm >= dAcc && xm <= S - dAcc
+    if (cruise) dt += (x1 - x0) / v
+    else dt += Math.abs(speedAt(x1, S, v, a) - speedAt(x0, S, v, a)) / a
+  }
+  return { dt, vavg: dt > 0 ? len / dt : v }
+}
+
+// Flatten a machine move into its traversed polyline (array of points).
+export function movePolyline(m) {
+  if (m.kind === 'travel') return [m.a, m.b]
+  const pts = []
+  for (const prim of m.prims) {
+    const pp = flattenPrim(prim)
+    if (pts.length) pts.push(...pp.slice(1))   // dedupe the shared join point
+    else pts.push(...pp)
+  }
+  return pts
+}
+
+/**
+ * Acceleration-aware per-segment timing for a polyline. The head starts and ends
+ * at rest AND comes to rest at every sharp corner, so each raster scan line
+ * accelerates from / decelerates to its turnaround. (Without this, a whole
+ * serpentine is one constant-speed move and the acceleration value barely changes
+ * the estimate — which is why accel "had no effect".)
+ *
+ * @returns {{ durs:number[], speeds:number[], total:number }}
+ *   durs[i] / speeds[i] = duration (s) and average speed (mm/s) of segment i.
+ */
+export function rampSegments(points, v, a) {
+  const n = points.length - 1
+  if (n <= 0) return { durs: [], speeds: [], total: 0 }
+  const segs = []
+  for (let i = 0; i < n; i++) {
+    const p = points[i], q = points[i + 1]
+    const dx = q.x - p.x, dy = q.y - p.y
+    const L = Math.hypot(dx, dy)
+    segs.push({ L, ux: L > 1e-9 ? dx / L : 0, uy: L > 1e-9 ? dy / L : 0 })
+  }
+  // Mark vertices where the head must stop (run boundaries).
+  const stop = new Array(n + 1).fill(false)
+  stop[0] = true; stop[n] = true
+  for (let i = 1; i < n; i++) {
+    const a0 = segs[i - 1], a1 = segs[i]
+    if (a0.L < 1e-9 || a1.L < 1e-9) { stop[i] = true; continue }
+    if (a0.ux * a1.ux + a0.uy * a1.uy < CORNER_COS) stop[i] = true
+  }
+  const durs = new Array(n).fill(0)
+  const speeds = new Array(n).fill(v)
+  let total = 0
+  for (let rs = 0; rs < n; ) {
+    let re = rs + 1
+    while (re < n && !stop[re]) re++          // run = segments [rs, re)
+    let S = 0
+    for (let k = rs; k < re; k++) S += segs[k].L
+    let s0 = 0
+    for (let k = rs; k < re; k++) {
+      const s1 = s0 + segs[k].L
+      const { dt, vavg } = profileSeg(s0, s1, S, v, a)
+      durs[k] = dt; speeds[k] = vavg; total += dt
+      s0 = s1
+    }
+    rs = re
+  }
+  return { durs, speeds, total }
+}
+
+/**
+ * Annotate each segment of a polyline with its place in the velocity profile, so
+ * the renderer can shade speed + reveal time PER FRAGMENT instead of subdividing
+ * the geometry. The polyline keeps its natural tessellation (a straight line stays
+ * one segment); the smooth ramp is reconstructed on the GPU from these numbers.
+ *
+ * @returns {Array<{ s0, s1, S, dur, runStartRel }>} one entry per segment:
+ *   s0/s1       arc-length (mm) of the segment's endpoints within its run
+ *   S           total length (mm) of the run (between two corner stops)
+ *   dur         duration (s) of the segment under the acceleration profile
+ *   runStartRel time (s) at the run's start, relative to the polyline start
+ */
+export function annotateRuns(points, v, a) {
+  const n = points.length - 1
+  const out = []
+  if (n <= 0) return out
+
+  const segL = []
+  for (let i = 0; i < n; i++) {
+    segL.push(Math.hypot(points[i + 1].x - points[i].x, points[i + 1].y - points[i].y))
+  }
+  // Corner stops (same rule as rampSegments): the head rests at run boundaries.
+  const stop = new Array(points.length).fill(false)
+  stop[0] = true; stop[n] = true
+  for (let i = 1; i < n; i++) {
+    const ax = points[i].x - points[i - 1].x, ay = points[i].y - points[i - 1].y
+    const bx = points[i + 1].x - points[i].x, by = points[i + 1].y - points[i].y
+    const la = Math.hypot(ax, ay), lb = Math.hypot(bx, by)
+    if (la < 1e-9 || lb < 1e-9) { stop[i] = true; continue }
+    if ((ax * bx + ay * by) / (la * lb) < CORNER_COS) stop[i] = true
+  }
+
+  let cumTime = 0   // relative to the polyline start
+  for (let rs = 0; rs < n; ) {
+    let re = rs + 1
+    while (re < n && !stop[re]) re++          // run = segments [rs, re)
+    let S = 0
+    for (let k = rs; k < re; k++) S += segL[k]
+    const runStartRel = cumTime
+    let s0 = 0
+    for (let k = rs; k < re; k++) {
+      const s1 = s0 + segL[k]
+      const { dt } = profileSeg(s0, s1, S, v, a)
+      out[k] = { s0, s1, S, dur: dt, runStartRel }
+      cumTime += dt
+      s0 = s1
+    }
+    rs = re
+  }
+  return out
 }
 
 export function categorize(hex) {
@@ -685,7 +839,9 @@ export function buildToolpath(data, { optimize = false, speeds = SPEED_MM_S, ras
     else if (m.kind === 'cut')     stats.cutLen     += L
     else if (m.kind === 'engrave') stats.engraveLen += L
     else                           stats.otherLen   += L
-    stats.totalTime += rampedTime(L, speedFor(m), accel)
+    // Acceleration-aware: ramps at every corner (each scan-line turnaround), so
+    // the printer's accel value actually drives the estimate.
+    stats.totalTime += rampSegments(movePolyline(m), speedFor(m), accel).total
   }
   return { moves, stats }
 }

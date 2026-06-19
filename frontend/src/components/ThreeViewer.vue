@@ -18,7 +18,7 @@ import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import * as THREE from 'three'
 import eventBus from '../eventBus'
-import { buildToolpath, flattenPrim, isGreen, SPEED_MM_S, fixColors, computeDoubleRemoval, rotateData, removeWhite, rampedTime } from '../toolpath'
+import { buildToolpath, isGreen, SPEED_MM_S, fixColors, computeDoubleRemoval, rotateData, removeWhite, rampSegments, annotateRuns, movePolyline } from '../toolpath'
 
 const container = ref(null)
 const canvas    = ref(null)
@@ -41,6 +41,9 @@ let currentData = null
 let optimizePath = false
 let rasterBlock  = false   // draw raster regions as a filling block vs scan lines
 let debugColors  = false   // colour every segment randomly (to count them)
+let showTravel   = true    // draw the dotted "Leerwege" (travel) moves
+let speedGradient = false  // debug: colour segments by speed (accel debugging)
+let lineMaterial = null    // toolpath line material (for live travel show/hide)
 
 // Head speeds + raster pitch from the selected printer/material (profiles.js).
 // Default to the placeholders until a material is chosen.
@@ -377,6 +380,20 @@ const handleDebugColorsChanged = (enabled) => {
   if (currentData) drawObjects(currentData)
 }
 
+// Toggle: show/hide the dotted travel "Leerwege". Cheap — just flips a shader
+// uniform; the segments stay in the geometry so timing/head position is intact.
+const handleShowTravelChanged = (enabled) => {
+  showTravel = enabled !== false
+  if (lineMaterial) lineMaterial.uniforms.uShowTravel.value = showTravel ? 1 : 0
+}
+
+// Toggle: colour segments by speed (debug acceleration). The gradient is computed
+// per-fragment in the shader, so this is just a uniform flip — no rebuild.
+const handleSpeedGradientChanged = (enabled) => {
+  speedGradient = !!enabled
+  if (lineMaterial) lineMaterial.uniforms.uGradient.value = speedGradient ? 1 : 0
+}
+
 // ── Edits: Fix Colors / Remove Doubles ────────────────────────────────────────
 // Both mutate currentData (the single source of truth) and rebuild, so the
 // changes show in the viewer AND flow into the PDF download.
@@ -501,26 +518,53 @@ const loadHeadIcon = (group) => {
     () => loader.load('/printhead.png', swap, undefined, () => {}))
 }
 
-// Interpolate the head's XY position along the toolpath at time `t` (seconds),
-// using the per-segment time/vertex arrays stashed on `playback`.
-const headPosAt = (t) => {
-  const pb = playback
-  if (!pb || !pb.segTimes || pb.segTimes.length === 0) return null
-  const st = pb.segTimes, sv = pb.segVerts
-  const nSeg = st.length / 2
-  if (t <= st[0]) return { x: sv[0], y: sv[1] }
-  const last = (nSeg - 1) * 6
-  if (t >= st[st.length - 1]) return { x: sv[last + 3], y: sv[last + 4] }
-  let lo = 0, hi = nSeg - 1                            // binary search by end-time
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1
-    if (st[mid * 2 + 1] < t) lo = mid + 1; else hi = mid
+// Distance travelled after time `tl` into a run of length S that starts at rest
+// with target speed v and acceleration a (the inverse of the shader's timeAt).
+const distAtTime = (tl, S, v, a) => {
+  if (!a || a <= 0 || !v || v <= 0) return v > 0 ? Math.min(S, v * tl) : 0
+  const dAcc = (v * v) / (2 * a)
+  if (2 * dAcc <= S) {                       // trapezoid
+    const tAcc = v / a
+    const tCruiseEnd = tAcc + (S - 2 * dAcc) / v
+    const Ttot = tCruiseEnd + tAcc
+    if (tl <= tAcc) return 0.5 * a * tl * tl
+    if (tl <= tCruiseEnd) return dAcc + v * (tl - tAcc)
+    const td = Math.min(tl, Ttot) - tCruiseEnd
+    return Math.min(S, (S - dAcc) + v * td - 0.5 * a * td * td)
   }
-  const t0 = st[lo * 2], t1 = st[lo * 2 + 1], o = lo * 6
-  // Clamp so time gaps (e.g. raster-as-block mode) park the marker at a segment
-  // endpoint instead of extrapolating past it.
-  const f = t1 > t0 ? Math.max(0, Math.min(1, (t - t0) / (t1 - t0))) : 0
-  return { x: sv[o] + (sv[o + 3] - sv[o]) * f, y: sv[o + 1] + (sv[o + 4] - sv[o + 1]) * f }
+  const tPeak = Math.sqrt(S / a)             // triangle (never reaches v)
+  const vPeak = a * tPeak
+  if (tl <= tPeak) return 0.5 * a * tl * tl
+  const td = Math.min(tl, 2 * tPeak) - tPeak
+  return Math.min(S, S / 2 + vPeak * td - 0.5 * a * td * td)
+}
+
+// XY at arc-length `s` along a run's polyline (pts + cumulative arc-length cum).
+const xyAtArc = (run, s) => {
+  const { pts, cum } = run
+  const last = cum.length - 1
+  if (s <= 0) return pts[0]
+  if (s >= cum[last]) return pts[last]
+  let lo = 0, hi = last
+  while (lo < hi) { const m = (lo + hi) >> 1; if (cum[m + 1] < s) lo = m + 1; else hi = m }
+  const c0 = cum[lo], c1 = cum[lo + 1]
+  const f = c1 > c0 ? (s - c0) / (c1 - c0) : 0
+  return { x: pts[lo].x + (pts[lo + 1].x - pts[lo].x) * f,
+           y: pts[lo].y + (pts[lo + 1].y - pts[lo].y) * f }
+}
+
+// Head XY at toolpath time `t` (seconds): find the active run, invert the
+// velocity profile to an arc-length, then map that to a point — so the marker
+// accelerates/decelerates exactly like the shader reveal.
+const headPosAt = (t) => {
+  const runs = playback ? playback.runs : null
+  if (!runs || runs.length === 0) return null
+  if (t <= runs[0].t0) return runs[0].pts[0]
+  let lo = 0, hi = runs.length - 1                     // last run with t0 <= t
+  while (lo < hi) { const m = (lo + hi + 1) >> 1; if (runs[m].t0 <= t) lo = m; else hi = m - 1 }
+  const run = runs[lo]
+  const tl = Math.max(0, Math.min(run.T, t - run.t0))  // clamp into the run (gaps park at its end)
+  return xyAtArc(run, distAtTime(tl, run.S, run.v, currentAccel))
 }
 
 const updateHeadMarker = () => {
@@ -622,33 +666,26 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
   // ── Toolpath: ordered machine moves (engrave → cut, optional optimise) ────
   const { moves, stats } = buildToolpath(data, { optimize: optimizePath, speeds: currentSpeeds, rasterPitch: currentRasterPitch, accel: currentAccel })
 
-  // Expand moves into a single ordered segment stream. Each vertex also carries
-  // its cumulative TIME along the toolpath (aTime); the shader reveals every
-  // fragment whose aTime <= the current head time, so one line is both the faint
-  // preview and the solid played-so-far portion — no second line, no overdraw.
-  // Travels become gray dotted dashes; their per-dash duration is scaled so the
-  // whole travel still consumes its true time.
+  // Expand moves into one ordered segment stream. The GEOMETRY stays minimal —
+  // a straight line is a single segment — and the velocity profile is evaluated
+  // PER FRAGMENT in the shader: each vertex carries its arc-length within the run
+  // (aRunDist), the run length (aRunLen), the run's start time (aRunT0) and the
+  // target speed (aSpeed). From those the shader derives both the reveal time
+  // (so the line grows with real acceleration) and, in gradient mode, the colour
+  // (blue = slow at the corners → red = full march speed). No resampling.
   const vertices = []     // xyz per vertex (2 per segment)
-  const colors   = []     // rgb per vertex
-  const times    = []     // cumulative time (s) at each vertex
+  const colors   = []     // rgb per vertex (base colour; gradient overrides in shader)
+  const runDist  = []     // arc-length (mm) of the vertex along its run
+  const runLen   = []     // length (mm) of the run the segment belongs to
+  const runT0    = []     // toolpath time (s) at the run's start
+  const segSpeed = []     // target speed (mm/s) of the move
   const dashes   = []     // per vertex: 1 = dashed travel, 0 = solid beam-on
-  const dists    = []     // per vertex: world distance (mm) along the segment
+  const dists    = []     // per vertex: world distance (mm) along the run (dashing)
   const rasterBlocks = [] // { bbox, t0, t1, color } when "raster as block" is on
+  const headRuns = []     // per run: { t0, T, S, v, pts[], cum[] } for the head marker
   let runTime = 0         // running time along the toolpath
-
-  // dash/segLen default to a solid (non-dashed) segment; travels pass dash=1 and
-  // the full length so the shader can dash them in world space.
-  const pushSeg = (x1, y1, x2, y2, rgb, dur, dash = 0, segLen = 0) => {
-    const t0 = runTime, t1 = runTime + dur
-    runTime = t1
-    // Debug: give each segment its own random colour so they're easy to count.
-    const c = debugColors ? [Math.random(), Math.random(), Math.random()] : rgb
-    vertices.push(x1, y1, 0, x2, y2, 0)
-    colors.push(c[0], c[1], c[2], c[0], c[1], c[2])
-    times.push(t0, t1)
-    dashes.push(dash, dash)
-    dists.push(0, segLen)
-  }
+  let headRun = null
+  const flushHeadRun = () => { if (headRun) { headRuns.push(headRun); headRun = null } }
 
   for (const m of moves) {
     const speed = (m.category === 'raster' ? (currentSpeeds.raster ?? currentSpeeds.engrave)
@@ -658,44 +695,45 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
       // Engrave region as a filling block: skip the serpentine segments, record
       // the region + its time span, and advance the clock by the same duration
       // so the overall timeline is identical to the scan-line version.
-      let len = 0
-      for (const prim of m.prims) len += Math.hypot(prim.b.x - prim.a.x, prim.b.y - prim.a.y)
-      const dur = rampedTime(len, speed, currentAccel)
+      flushHeadRun()
+      const dur = rampSegments(movePolyline(m), speed, currentAccel).total
       rasterBlocks.push({ bbox: m.bbox, t0: runTime, t1: runTime + dur, color: lineRGB(m.color) })
       runTime += dur
       continue
     }
 
-    if (m.kind === 'travel') {
-      // Travel ("Leerweg"): ONE segment, dashed in the fragment shader. aDist
-      // carries the world-space distance along it so the shader punches out the
-      // gaps — far cheaper than emitting a segment per dash. The whole travel
-      // still consumes its true time (reveal interpolates linearly across it).
-      const a = m.a, b = m.b
-      const full = Math.hypot(b.x - a.x, b.y - a.y)
-      if (full < 1e-6) continue
-      pushSeg(a.x, a.y, b.x, b.y, lineRGB(m.color), rampedTime(full, speed, currentAccel), 1, full)
-    } else {
-      // Beam-on path: tessellate each primitive, then distribute the path's total
-      // (acceleration-aware) duration across its sub-segments by length so the
-      // playback total matches the time estimate exactly.
-      const rgb = lineRGB(m.color)
-      const segs = []
-      let moveLen = 0
-      for (const prim of m.prims) {
-        const pts = flattenPrim(prim)
-        for (let i = 0; i < pts.length - 1; i++) {
-          const p = pts[i], q = pts[i + 1]
-          const L = Math.hypot(q.x - p.x, q.y - p.y)
-          segs.push([p, q, L]); moveLen += L
-        }
+    const isTravel = m.kind === 'travel'
+    const pts = isTravel ? [m.a, m.b] : movePolyline(m)
+    if (pts.length < 2) continue
+    // annotateRuns splits the polyline at sharp corners (raster turnarounds, the
+    // 90° step between scan rows) and returns, per segment, its position in the
+    // run's velocity profile (s0/s1/S) plus its duration.
+    const ann = annotateRuns(pts, speed, currentAccel)
+    const moveStart = runTime
+    const baseRgb = lineRGB(m.color)
+
+    for (let i = 0; i < pts.length - 1; i++) {
+      const info = ann[i]
+      const t0run = moveStart + info.runStartRel
+      if (!headRun || headRun.t0 !== t0run) {            // new run begins
+        flushHeadRun()
+        headRun = { t0: t0run, T: 0, S: info.S, v: speed, pts: [pts[i]], cum: [0] }
       }
-      const moveDur = rampedTime(moveLen, speed, currentAccel)
-      for (const [p, q, L] of segs) {
-        pushSeg(p.x, p.y, q.x, q.y, rgb, moveLen > 0 ? moveDur * (L / moveLen) : 0)
-      }
+      const rgb = debugColors ? [Math.random(), Math.random(), Math.random()] : baseRgb
+      runTime += info.dur
+      const p = pts[i], q = pts[i + 1]
+      vertices.push(p.x, p.y, 0, q.x, q.y, 0)
+      colors.push(rgb[0], rgb[1], rgb[2], rgb[0], rgb[1], rgb[2])
+      runDist.push(info.s0, info.s1)
+      runLen.push(info.S, info.S)
+      runT0.push(t0run, t0run)
+      segSpeed.push(speed, speed)
+      dashes.push(isTravel ? 1 : 0, isTravel ? 1 : 0)
+      dists.push(info.s0, info.s1)
+      headRun.pts.push(q); headRun.cum.push(info.s1); headRun.T += info.dur
     }
   }
+  flushHeadRun()
 
   // ── Single toolpath line ──────────────────────────────────────────────────
   // One LineSegments holds the whole toolpath. A small shader colours each
@@ -703,16 +741,20 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
   // both the preview and the played-so-far line in one cheap draw call, and the
   // reveal boundary is exact per-pixel (smooth tip) without moving any vertex.
   playback = null
+  lineMaterial = null
   const revealMaterials = []   // all materials whose uProgress the clock advances
   const segCount = vertices.length / 6
 
   if (segCount > 0) {
     const geo = new THREE.BufferGeometry()
-    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertices), 3))
-    geo.setAttribute('color',    new THREE.BufferAttribute(new Float32Array(colors), 3))
-    geo.setAttribute('aTime',    new THREE.BufferAttribute(new Float32Array(times), 1))
-    geo.setAttribute('aDash',    new THREE.BufferAttribute(new Float32Array(dashes), 1))
-    geo.setAttribute('aDist',    new THREE.BufferAttribute(new Float32Array(dists), 1))
+    geo.setAttribute('position',  new THREE.BufferAttribute(new Float32Array(vertices), 3))
+    geo.setAttribute('color',     new THREE.BufferAttribute(new Float32Array(colors), 3))
+    geo.setAttribute('aRunDist',  new THREE.BufferAttribute(new Float32Array(runDist), 1))
+    geo.setAttribute('aRunLen',   new THREE.BufferAttribute(new Float32Array(runLen), 1))
+    geo.setAttribute('aRunT0',    new THREE.BufferAttribute(new Float32Array(runT0), 1))
+    geo.setAttribute('aSpeed',    new THREE.BufferAttribute(new Float32Array(segSpeed), 1))
+    geo.setAttribute('aDash',     new THREE.BufferAttribute(new Float32Array(dashes), 1))
+    geo.setAttribute('aDist',     new THREE.BufferAttribute(new Float32Array(dists), 1))
 
     const mat = new THREE.ShaderMaterial({
       transparent: true,
@@ -720,19 +762,31 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
       uniforms: {
         uProgress:     { value: 0 },
         uPreviewAlpha: { value: PREVIEW_OPACITY },
+        uShowTravel:   { value: showTravel ? 1 : 0 },
+        uGradient:     { value: speedGradient ? 1 : 0 },
+        uAccel:        { value: currentAccel },
       },
       vertexShader: `
         attribute vec3 color;
-        attribute float aTime;
+        attribute float aRunDist;
+        attribute float aRunLen;
+        attribute float aRunT0;
+        attribute float aSpeed;
         attribute float aDash;
         attribute float aDist;
         varying vec3 vColor;
-        varying float vTime;
+        varying float vRunDist;
+        varying float vRunLen;
+        varying float vRunT0;
+        varying float vSpeed;
         varying float vDash;
         varying float vDist;
         void main() {
           vColor = color;
-          vTime = aTime;
+          vRunDist = aRunDist;
+          vRunLen = aRunLen;
+          vRunT0 = aRunT0;
+          vSpeed = aSpeed;
           vDash = aDash;
           vDist = aDist;
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
@@ -741,15 +795,64 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
       fragmentShader: `
         uniform float uProgress;
         uniform float uPreviewAlpha;
+        uniform float uShowTravel;
+        uniform float uGradient;
+        uniform float uAccel;
         varying vec3 vColor;
-        varying float vTime;
+        varying float vRunDist;
+        varying float vRunLen;
+        varying float vRunT0;
+        varying float vSpeed;
         varying float vDash;
         varying float vDist;
+
+        // Speed (mm/s) at arc-length s in a run (rest→cruise→rest, accel uAccel).
+        float speedAt(float s, float S, float v) {
+          float a = uAccel;
+          if (a <= 0.0 || v <= 0.0) return v;
+          float dAcc = (v * v) / (2.0 * a);
+          if (2.0 * dAcc <= S) {
+            if (s < dAcc)     return sqrt(2.0 * a * s);
+            if (s > S - dAcc) return sqrt(max(0.0, 2.0 * a * (S - s)));
+            return v;
+          }
+          float h = S * 0.5;
+          return s <= h ? sqrt(2.0 * a * s) : sqrt(max(0.0, 2.0 * a * (S - s)));
+        }
+        // Time (s) from the run start to arc-length s.
+        float timeAt(float s, float S, float v) {
+          float a = uAccel;
+          if (a <= 0.0 || v <= 0.0) return v > 0.0 ? s / v : 0.0;
+          float dAcc = (v * v) / (2.0 * a);
+          if (2.0 * dAcc <= S) {
+            float tAcc = v / a;
+            float Tt = 2.0 * tAcc + (S - 2.0 * dAcc) / v;
+            if (s <= dAcc)     return sqrt(2.0 * s / a);
+            if (s <= S - dAcc) return tAcc + (s - dAcc) / v;
+            return Tt - sqrt(2.0 * max(0.0, S - s) / a);
+          }
+          float Tt = 2.0 * sqrt(S / a);
+          float h = S * 0.5;
+          if (s <= h) return sqrt(2.0 * s / a);
+          return Tt - sqrt(2.0 * max(0.0, S - s) / a);
+        }
+        // Fraction (0..1, hue 240→0) → blue→cyan→green→yellow→red.
+        vec3 speedHue(float frac) {
+          float hh = (1.0 - clamp(frac, 0.0, 1.0)) * 6.0 * (240.0 / 360.0);
+          return clamp(abs(mod(hh + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+        }
+
         void main() {
-          // Dashed travel: punch out the gaps in world space (mm).
-          if (vDash > 0.5 && mod(vDist, ${(TRAVEL_DASH + TRAVEL_GAP).toFixed(1)}) > ${TRAVEL_DASH.toFixed(1)}) discard;
-          float a = vTime <= uProgress ? 1.0 : uPreviewAlpha;
-          gl_FragColor = vec4(vColor, a);
+          if (vDash > 0.5) {
+            if (uShowTravel < 0.5) discard;   // travel "Leerwege" hidden
+            // Dashed travel: punch out the gaps in world space (mm).
+            if (mod(vDist, ${(TRAVEL_DASH + TRAVEL_GAP).toFixed(1)}) > ${TRAVEL_DASH.toFixed(1)}) discard;
+          }
+          float revealT = vRunT0 + timeAt(vRunDist, vRunLen, vSpeed);
+          vec3 col = vColor;
+          if (uGradient > 0.5) col = speedHue(speedAt(vRunDist, vRunLen, vSpeed) / max(vSpeed, 1e-3));
+          float a = revealT <= uProgress ? 1.0 : uPreviewAlpha;
+          gl_FragColor = vec4(col, a);
         }
       `,
     })
@@ -758,6 +861,7 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
     line.position.z = 0.05
     drawingGroup.add(line)
     revealMaterials.push(mat)
+    lineMaterial = mat
   }
 
   // Raster-as-block meshes: one quad per region, filled top→bottom over its time
@@ -804,12 +908,9 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
   }
 
   if (revealMaterials.length > 0) {
-    // Keep the per-segment time + vertex streams so the head marker can find the
-    // exact XY position for any playback time.
-    playback = {
-      materials: revealMaterials, total: runTime, segCount,
-      segTimes: new Float32Array(times), segVerts: new Float32Array(vertices),
-    }
+    // Keep the per-run profile data so the head marker can find the exact XY
+    // position (with acceleration) for any playback time.
+    playback = { materials: revealMaterials, total: runTime, segCount, runs: headRuns }
   }
 
   scene.add(drawingGroup)
@@ -906,6 +1007,8 @@ onMounted(() => {
   eventBus.on('optimize-changed',   handleOptimizeChanged)
   eventBus.on('raster-mode-changed', handleRasterModeChanged)
   eventBus.on('debug-colors-changed', handleDebugColorsChanged)
+  eventBus.on('show-travel-changed', handleShowTravelChanged)
+  eventBus.on('speed-gradient-changed', handleSpeedGradientChanged)
   eventBus.on('fix-colors',         handleFixColors)
   eventBus.on('doubles-detect',     handleDoublesDetect)
   eventBus.on('doubles-remove',     handleDoublesRemove)
@@ -926,6 +1029,8 @@ onBeforeUnmount(() => {
   eventBus.off('optimize-changed',   handleOptimizeChanged)
   eventBus.off('raster-mode-changed', handleRasterModeChanged)
   eventBus.off('debug-colors-changed', handleDebugColorsChanged)
+  eventBus.off('show-travel-changed', handleShowTravelChanged)
+  eventBus.off('speed-gradient-changed', handleSpeedGradientChanged)
   eventBus.off('fix-colors',         handleFixColors)
   eventBus.off('doubles-detect',     handleDoublesDetect)
   eventBus.off('doubles-remove',     handleDoublesRemove)

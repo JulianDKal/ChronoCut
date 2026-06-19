@@ -14,7 +14,7 @@
   operation (<cut>/<engrave>/<raster>) has speed + power; speed unit is "mm/s"
   or "%" (of maxSpeed). <raster> also takes pitch (mm) or dpi.
 -->
-<printer id="edgar" name="Edgar" powerW="60" bedWidth="1016" bedHeight="711" maxSpeed="250" accel="10">
+<printer id="edgar" name="Edgar" powerW="60" bedWidth="1016" bedHeight="711" maxSpeed="250" accel="300">
   <materials>
     <material name="Plywood">
       <thickness value="3 mm" id="ply3">

@@ -89,9 +89,17 @@
         <input type="checkbox" v-model="rasterBlock" @change="onRasterModeChange" />
         <span class="opt-text">Raster as solid block</span>
       </label>
+      <label class="opt-toggle" :title="'Zeigt die Leerwege (Eilgänge ohne Laser) als gepunktete Linien an.'">
+        <input type="checkbox" v-model="showTravel" @change="onShowTravelChange" />
+        <span class="opt-text">Leerwege anzeigen</span>
+      </label>
       <label class="opt-toggle" :title="'Debug: random segment colours + show the segment counter (top-left).'">
         <input type="checkbox" v-model="debugColors" @change="onDebugColorsChange" />
         <span class="opt-text">Debug</span>
+      </label>
+      <label class="opt-toggle" :title="'Debug: färbt die Segmente nach Geschwindigkeit (blau = langsam an Ecken, rot = volle Marschgeschwindigkeit) — zum Debuggen der Beschleunigung.'">
+        <input type="checkbox" v-model="speedGradient" @change="onSpeedGradientChange" />
+        <span class="opt-text">Speed-Gradient (Debug)</span>
       </label>
     </div>
 
@@ -165,6 +173,18 @@ const onRasterModeChange = () => {
 const debugColors = ref(false)
 const onDebugColorsChange = () => {
   eventBus.emit('debug-colors-changed', debugColors.value)
+}
+
+// Show/hide the dotted travel "Leerwege".
+const showTravel = ref(true)
+const onShowTravelChange = () => {
+  eventBus.emit('show-travel-changed', showTravel.value)
+}
+
+// Debug: colour segments by speed (for debugging acceleration).
+const speedGradient = ref(false)
+const onSpeedGradientChange = () => {
+  eventBus.emit('speed-gradient-changed', speedGradient.value)
 }
 
 // ── Cutter / Material / Thickness selection ───────────────────────────────────

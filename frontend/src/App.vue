@@ -14,6 +14,13 @@
         <!-- Debug overlay (top-left) — toggled by the sidebar "Debug" switch -->
         <div v-show="showDebug" class="debug-overlay">Segments: {{ segmentCount.toLocaleString() }}</div>
 
+        <!-- Speed-gradient legend (top-left) — toggled by the sidebar switch -->
+        <div v-show="showGradient" class="speed-legend">
+          <span>langsam</span>
+          <div class="speed-bar"></div>
+          <span>schnell</span>
+        </div>
+
         <!-- Dark-mode toggle (floating, top-right) -->
         <button
           class="theme-toggle"
@@ -68,6 +75,10 @@ const onStats = (stats) => { segmentCount.value = stats?.segments ?? 0 }
 const showDebug = ref(false)
 const onDebugToggled = (on) => { showDebug.value = !!on }
 
+// Speed-gradient legend visibility (driven by the sidebar "Speed-Gradient" toggle).
+const showGradient = ref(false)
+const onGradientToggled = (on) => { showGradient.value = !!on }
+
 // Fit check: the viewer reports whether the design fits the bed (and if a 90°
 // rotation would help). null = unknown/ok-and-cleared.
 const fit = ref(null)
@@ -88,6 +99,7 @@ onMounted(() => {
   eventBus.on('lines-updated', onLinesUpdated)
   eventBus.on('toolpath-stats', onStats)
   eventBus.on('debug-colors-changed', onDebugToggled)
+  eventBus.on('speed-gradient-changed', onGradientToggled)
   eventBus.on('fit-status', onFitStatus)
   // Sync the viewer to the stored theme. This runs after the child ThreeViewer's
   // onMounted, so its 'theme-changed' listener is already registered.
@@ -97,6 +109,7 @@ onBeforeUnmount(() => {
   eventBus.off('lines-updated', onLinesUpdated)
   eventBus.off('toolpath-stats', onStats)
   eventBus.off('debug-colors-changed', onDebugToggled)
+  eventBus.off('speed-gradient-changed', onGradientToggled)
   eventBus.off('fit-status', onFitStatus)
 })
 </script>
@@ -177,6 +190,33 @@ onBeforeUnmount(() => {
   font-size: 12px;
   pointer-events: none;
   user-select: none;
+}
+
+/* ── Speed-gradient legend ──────────────────────────────────────────────── */
+.speed-legend {
+  position: absolute;
+  top: 44px;
+  left: 14px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  pointer-events: none;
+  user-select: none;
+}
+.speed-bar {
+  width: 90px;
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(90deg,
+    hsl(240, 100%, 50%), hsl(180, 100%, 50%), hsl(120, 100%, 50%),
+    hsl(60, 100%, 50%), hsl(0, 100%, 50%));
 }
 
 /* ── Dark-mode toggle ───────────────────────────────────────────────────── */
