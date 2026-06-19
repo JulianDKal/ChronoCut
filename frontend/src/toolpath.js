@@ -828,20 +828,27 @@ export function buildToolpath(data, { optimize = false, speeds = SPEED_MM_S, ras
     lastPos = { x: 0, y: 0 }
   }
 
-  // Stats + time estimate.
-  const stats = { cutLen: 0, engraveLen: 0, otherLen: 0, travelLen: 0, totalTime: 0 }
+  // Stats + time estimate. Length AND time are tracked per operation type, with
+  // raster engrave (green/grayscale serpentine) split out from vector engrave
+  // (red) so the UI can break the total down by operation.
+  const stats = {
+    cutLen: 0, cutTime: 0, engraveLen: 0, engraveTime: 0, rasterLen: 0, rasterTime: 0,
+    otherLen: 0, otherTime: 0, travelLen: 0, travelTime: 0, totalTime: 0,
+  }
   for (const m of moves) {
     let L = 0
     if (m.kind === 'travel') L = dist(m.a, m.b)
     else for (const prim of m.prims) L += primLength(prim)
-
-    if      (m.kind === 'travel')  stats.travelLen  += L
-    else if (m.kind === 'cut')     stats.cutLen     += L
-    else if (m.kind === 'engrave') stats.engraveLen += L
-    else                           stats.otherLen   += L
     // Acceleration-aware: ramps at every corner (each scan-line turnaround), so
     // the printer's accel value actually drives the estimate.
-    stats.totalTime += rampSegments(movePolyline(m), speedFor(m), accel).total
+    const T = rampSegments(movePolyline(m), speedFor(m), accel).total
+
+    if      (m.kind === 'travel')     { stats.travelLen  += L; stats.travelTime  += T }
+    else if (m.kind === 'cut')        { stats.cutLen     += L; stats.cutTime     += T }
+    else if (m.category === 'raster') { stats.rasterLen  += L; stats.rasterTime  += T }
+    else if (m.kind === 'engrave')    { stats.engraveLen += L; stats.engraveTime += T }
+    else                              { stats.otherLen   += L; stats.otherTime   += T }
+    stats.totalTime += T
   }
   return { moves, stats }
 }

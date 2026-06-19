@@ -12,32 +12,35 @@
         <ThreeViewer />
 
         <!-- Debug overlay (top-left) — toggled by the sidebar "Debug" switch -->
-        <div v-show="showDebug" class="debug-overlay">Segments: {{ segmentCount.toLocaleString() }}</div>
+        <div v-show="showDebug" class="debug-overlay">{{ t('segments') }}: {{ segmentCount.toLocaleString() }}</div>
 
         <!-- Speed-gradient legend (top-left) — toggled by the sidebar switch -->
         <div v-show="showGradient" class="speed-legend">
-          <span>langsam</span>
+          <span>{{ t('slow') }}</span>
           <div class="speed-bar"></div>
-          <span>schnell</span>
+          <span>{{ t('fast') }}</span>
         </div>
 
         <!-- Dark-mode toggle (floating, top-right) -->
         <button
           class="theme-toggle"
           @click="toggleTheme"
-          :title="isDark ? 'Switch to light mode' : 'Switch to dark mode'"
+          :title="isDark ? t('toLight') : t('toDark')"
         >
           {{ isDark ? '☀' : '☾' }}
         </button>
 
+        <!-- Language switcher (floating, beneath the dark-mode toggle) -->
+        <LanguageSwitcher />
+
         <!-- Fit / rotate banner (top-centre) -->
         <div v-if="fit && !fit.ok" class="fit-banner" :class="{ error: !fit.canRotate }">
           <template v-if="fit.canRotate">
-            <span class="fit-msg">Passt nur gedreht ({{ fit.design.w }}×{{ fit.design.h }} mm auf {{ fit.bed.w }}×{{ fit.bed.h }} mm Bett)</span>
-            <button class="fit-btn" @click="rotate('ccw')">90° ⟲ links</button>
-            <button class="fit-btn" @click="rotate('cw')">90° ⟳ rechts</button>
+            <span class="fit-msg">{{ t('fitRotate', { dw: fit.design.w, dh: fit.design.h, bw: fit.bed.w, bh: fit.bed.h }) }}</span>
+            <button class="fit-btn" @click="rotate('ccw')">{{ t('rotateLeft') }}</button>
+            <button class="fit-btn" @click="rotate('cw')">{{ t('rotateRight') }}</button>
           </template>
-          <span v-else class="fit-msg">⚠ Design ({{ fit.design.w }}×{{ fit.design.h }} mm) ist größer als die Platte ({{ fit.bed.w }}×{{ fit.bed.h }} mm).</span>
+          <span v-else class="fit-msg">{{ t('tooBig', { dw: fit.design.w, dh: fit.design.h, bw: fit.bed.w, bh: fit.bed.h }) }}</span>
         </div>
 
         <!-- Floating control islands over the preview -->
@@ -60,7 +63,9 @@ import ThreeViewer from './components/ThreeViewer.vue'
 import Sidebar from './components/Sidebar.vue'
 import PlayBack from './components/PlayBack.vue'
 import DownloadComponent from './components/DownloadComponent.vue'
+import LanguageSwitcher from './components/LanguageSwitcher.vue'
 import eventBus from './eventBus'
+import { t } from './translations'
 
 // Controls are greyed out / disabled until a file has been uploaded.
 const hasContent = ref(false)

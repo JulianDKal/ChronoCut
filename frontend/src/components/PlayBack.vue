@@ -34,7 +34,7 @@
 
       <!-- Speed -->
       <div class="speed-control">
-        <span class="speed-label">Speed <span class="speed-value">{{ speedLabel }}x</span></span>
+        <span class="speed-label">{{ t('speed') }} <span class="speed-value">{{ speedLabel }}x</span></span>
         <input
           type="range"
           min="0.5"
@@ -52,6 +52,7 @@
 <script setup>
 import { ref, computed, onBeforeUnmount, onMounted } from 'vue'
 import eventBus from '../eventBus'
+import { t } from '../translations'
 
 // State
 const isPlaying = ref(false)

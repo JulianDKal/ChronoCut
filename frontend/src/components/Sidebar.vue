@@ -3,13 +3,13 @@
     <!-- Top Button Group -->
     <div class="button-group top-buttons">
       <button class="upload-btn" @click="handleUpload" :disabled="isLoading">
-        <span class="upload-btn-text">{{ isLoading ? 'Uploading…' : 'Upload' }}</span>
+        <span class="upload-btn-text">{{ isLoading ? t('uploading') : t('upload') }}</span>
       </button>
 
       <!-- Cutter Dropdown -->
       <div class="dropdown-wrapper" ref="cutterRef">
         <button class="dropdown-toggle" @click="toggleDropdown('cutter')">
-          <span class="btn-text">{{ selectedCutter ? selectedCutter.name : 'Select Cutter' }}</span>
+          <span class="btn-text">{{ selectedCutter ? selectedCutter.name : t('selectCutter') }}</span>
           <span class="arrow" :class="{ rotated: cutterOpen }">▾</span>
         </button>
         <div class="dropdown-menu" v-show="cutterOpen">
@@ -29,7 +29,7 @@
       <!-- Material (searchable) -->
       <div class="dropdown-wrapper" ref="materialRef">
         <button class="dropdown-toggle" @click="toggleDropdown('material')">
-          <span class="btn-text">{{ selectedFamily ? selectedFamily.name : 'Select Material' }}</span>
+          <span class="btn-text">{{ selectedFamily ? selectedFamily.name : t('selectMaterial') }}</span>
           <span class="arrow" :class="{ rotated: materialOpen }">▾</span>
         </button>
         <div class="dropdown-menu" v-show="materialOpen">
@@ -38,10 +38,10 @@
             v-model="materialSearch"
             class="dropdown-search"
             type="text"
-            placeholder="Search material…"
+            :placeholder="t('searchMaterial')"
             @click.stop
           />
-          <div v-if="filteredFamilies.length === 0" class="dropdown-empty">No match</div>
+          <div v-if="filteredFamilies.length === 0" class="dropdown-empty">{{ t('noMatch') }}</div>
           <div
             v-for="f in filteredFamilies"
             :key="f.name"
@@ -50,7 +50,7 @@
             @click="selectFamily(f)"
           >
             <span class="item-name">{{ f.name }}</span>
-            <span class="item-detail">{{ f.thicknesses.length }} option{{ f.thicknesses.length === 1 ? '' : 's' }}</span>
+            <span class="item-detail">{{ f.thicknesses.length }} {{ f.thicknesses.length === 1 ? t('option') : t('options') }}</span>
           </div>
         </div>
       </div>
@@ -62,7 +62,7 @@
           :disabled="!selectedFamily"
           @click="selectedFamily && toggleDropdown('thickness')"
         >
-          <span class="btn-text">{{ selectedThickness ? selectedThickness.label : (selectedFamily ? 'Select Thickness' : '—') }}</span>
+          <span class="btn-text">{{ selectedThickness ? selectedThickness.label : (selectedFamily ? t('selectThickness') : '—') }}</span>
           <span class="arrow" :class="{ rotated: thicknessOpen }">▾</span>
         </button>
         <div class="dropdown-menu" v-show="thicknessOpen">
@@ -81,25 +81,25 @@
 
     <!-- Toggles -->
     <div class="button-group toggle-group">
-      <label class="opt-toggle" :title="'When on, mimics the printer\'s path optimiser (shortest travel). When off, paths are cut in file order.'">
+      <label class="opt-toggle" :title="t('tipOptimize')">
         <input type="checkbox" v-model="optimizePath" @change="onOptimizeChange" />
-        <span class="opt-text">Optimize path order</span>
+        <span class="opt-text">{{ t('optimizePath') }}</span>
       </label>
-      <label class="opt-toggle" :title="'Draw engraving (green/grayscale) as one solid block that fills up, instead of the back-and-forth scan lines. Faster.'">
+      <label class="opt-toggle" :title="t('tipRaster')">
         <input type="checkbox" v-model="rasterBlock" @change="onRasterModeChange" />
-        <span class="opt-text">Raster as solid block</span>
+        <span class="opt-text">{{ t('rasterBlock') }}</span>
       </label>
-      <label class="opt-toggle" :title="'Zeigt die Leerwege (Eilgänge ohne Laser) als gepunktete Linien an.'">
+      <label class="opt-toggle" :title="t('tipShowTravel')">
         <input type="checkbox" v-model="showTravel" @change="onShowTravelChange" />
-        <span class="opt-text">Leerwege anzeigen</span>
+        <span class="opt-text">{{ t('showTravel') }}</span>
       </label>
-      <label class="opt-toggle" :title="'Debug: random segment colours + show the segment counter (top-left).'">
+      <label class="opt-toggle" :title="t('tipDebug')">
         <input type="checkbox" v-model="debugColors" @change="onDebugColorsChange" />
-        <span class="opt-text">Debug</span>
+        <span class="opt-text">{{ t('debug') }}</span>
       </label>
-      <label class="opt-toggle" :title="'Debug: färbt die Segmente nach Geschwindigkeit (blau = langsam an Ecken, rot = volle Marschgeschwindigkeit) — zum Debuggen der Beschleunigung.'">
+      <label class="opt-toggle" :title="t('tipSpeedGradient')">
         <input type="checkbox" v-model="speedGradient" @change="onSpeedGradientChange" />
-        <span class="opt-text">Speed-Gradient (Debug)</span>
+        <span class="opt-text">{{ t('speedGradient') }}</span>
       </label>
     </div>
 
@@ -112,17 +112,17 @@
         :class="{ armed: doublesArmed }"
         @click="handleRemoveDoubles"
         :disabled="isLoading"
-        :title="'Sucht deckungsgleiche rote/blaue Schnittlinien. 1. Klick hebt sie hervor, 2. Klick entfernt sie.'"
+        :title="t('tipRemoveDoubles')"
       >
         <span class="btn-text">{{ removeDoublesLabel }}</span>
       </button>
       <button class="sidebar-btn" @click="handleFixColors" :disabled="isLoading"
-        :title="'Snappt fast-rote/-blaue Linien und fast-grüne Flächen auf reines Rot/Blau/Grün.'">
-        <span class="btn-text">Fix Colors</span>
+        :title="t('tipFixColors')">
+        <span class="btn-text">{{ t('fixColors') }}</span>
       </button>
       <button class="sidebar-btn" @click="handleRemoveWhite" :disabled="isLoading"
-        :title="'Entfernt (fast) weiße Linien/Flächen (oft Wasserzeichen/Artefakte).'">
-        <span class="btn-text">Remove White</span>
+        :title="t('tipRemoveWhite')">
+        <span class="btn-text">{{ t('removeWhite') }}</span>
       </button>
     </div>
   </div>
@@ -132,6 +132,7 @@
 import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import eventBus from '../eventBus'
 import { loadProfiles, speedsFor } from '../profiles'
+import { t } from '../translations'
 
 // ── State ─────────────────────────────────────────────────────────────────────
 const isLoading = ref(false)
@@ -263,7 +264,7 @@ const uploadFile = async (file) => {
     resetDoubles()   // a fresh design clears any armed double-removal state
   } catch (error) {
     console.error('Upload error:', error)
-    alert('Error uploading file: ' + error.message)
+    alert(t('uploadError') + error.message)
   } finally {
     isLoading.value = false
   }
@@ -278,9 +279,10 @@ const doublesHint  = ref('')   // brief "Keine Dopplungen" note
 
 const removeDoublesLabel = computed(() => {
   if (doublesArmed.value) {
-    return `Entferne ${doublesCount.value} Dopplung${doublesCount.value === 1 ? '' : 'en'}`
+    const n = doublesCount.value
+    return `${t('removeN')} ${n} ${n === 1 ? t('double') : t('doubles')}`
   }
-  return doublesHint.value || 'Remove Doubles'
+  return doublesHint.value || t('removeDoubles')
 })
 
 const handleRemoveDoubles = () => {
@@ -293,7 +295,7 @@ const onDoublesResult = ({ count, fromDetect }) => {
   // Only nudge "none found" when the user actually ran a detection — not when the
   // state was reset by Fix Colors or after a removal.
   if (count === 0 && fromDetect) {
-    doublesHint.value = 'Keine Dopplungen'
+    doublesHint.value = t('noDoubles')
     setTimeout(() => { doublesHint.value = '' }, 1500)
   }
 }
