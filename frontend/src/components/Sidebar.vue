@@ -81,6 +81,10 @@
 
     <!-- Toggles -->
     <div class="button-group toggle-group">
+      <label class="opt-toggle" :title="t('tipRulers')">
+        <input type="checkbox" v-model="showRulers" @change="onRulersChange" />
+        <span class="opt-text">{{ t('showRulers') }}</span>
+      </label>
       <label class="opt-toggle" :title="t('tipOptimize')">
         <input type="checkbox" v-model="optimizePath" @change="onOptimizeChange" />
         <span class="opt-text">{{ t('optimizePath') }}</span>
@@ -174,6 +178,12 @@ const onRasterModeChange = () => {
 const debugColors = ref(false)
 const onDebugColorsChange = () => {
   eventBus.emit('debug-colors-changed', debugColors.value)
+}
+
+// Show the CAD rulers along the top + left edges of the viewport.
+const showRulers = ref(true)
+const onRulersChange = () => {
+  eventBus.emit('rulers-changed', showRulers.value)
 }
 
 // Show/hide the dotted travel "Leerwege".

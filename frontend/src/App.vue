@@ -12,10 +12,10 @@
         <ThreeViewer />
 
         <!-- Debug overlay (top-left) — toggled by the sidebar "Debug" switch -->
-        <div v-show="showDebug" class="debug-overlay">{{ t('segments') }}: {{ segmentCount.toLocaleString() }}</div>
+        <div v-show="showDebug" class="hud-chip debug-overlay">{{ t('segments') }}: {{ segmentCount.toLocaleString() }}</div>
 
         <!-- Speed-gradient legend (top-left) — toggled by the sidebar switch -->
-        <div v-show="showGradient" class="speed-legend">
+        <div v-show="showGradient" class="hud-chip speed-legend">
           <span>{{ t('slow') }}</span>
           <div class="speed-bar"></div>
           <span>{{ t('fast') }}</span>
@@ -181,40 +181,28 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 
-/* ── Debug overlay ──────────────────────────────────────────────────────── */
-.debug-overlay {
+/* ── HUD chips (debug overlay + speed-gradient legend) ──────────────────────
+   Shared style so the two debug read-outs look identical. Inset to clear the
+   minimal top/left rulers. */
+.hud-chip {
   position: absolute;
-  top: 14px;
-  left: 14px;
-  z-index: 20;
-  padding: 4px 8px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.55);
-  color: #d6f5c8;
-  font-family: 'Courier New', monospace;
-  font-size: 12px;
-  pointer-events: none;
-  user-select: none;
-}
-
-/* ── Speed-gradient legend ──────────────────────────────────────────────── */
-.speed-legend {
-  position: absolute;
-  top: 44px;
-  left: 14px;
+  left: 30px;
   z-index: 20;
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 8px;
-  border-radius: 6px;
+  padding: 5px 9px;
+  border-radius: 7px;
   background: rgba(0, 0, 0, 0.55);
-  color: #fff;
+  color: #e8eaed;
   font-family: 'Courier New', monospace;
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1;
   pointer-events: none;
   user-select: none;
 }
+.debug-overlay { top: 30px; }
+.speed-legend  { top: 64px; }
 .speed-bar {
   width: 90px;
   height: 8px;

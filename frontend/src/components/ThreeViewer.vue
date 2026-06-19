@@ -1,6 +1,8 @@
 <template>
   <div ref="container" class="three-container">
     <canvas ref="canvas" style="width: 100%; height: 100%; display: block;"></canvas>
+    <!-- CAD rulers (top + left), drawn in 2D over the WebGL canvas -->
+    <canvas ref="rulerCanvas" class="ruler-canvas"></canvas>
   </div>
 </template>
 
@@ -10,6 +12,14 @@
   height: 100%;
   overflow: hidden;
   position: relative;
+}
+.ruler-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;   /* clicks pass through to the 3D canvas */
 }
 </style>
 
@@ -22,6 +32,7 @@ import { buildToolpath, isGreen, SPEED_MM_S, fixColors, computeDoubleRemoval, ro
 
 const container = ref(null)
 const canvas    = ref(null)
+const rulerCanvas = ref(null)
 let scene, camera, renderer, controls
 let rectangleFrame
 let drawingGroup       // THREE.Group for imported geometry
@@ -44,6 +55,8 @@ let debugColors  = false   // colour every segment randomly (to count them)
 let showTravel   = true    // draw the dotted "Leerwege" (travel) moves
 let speedGradient = false  // debug: colour segments by speed (accel debugging)
 let lineMaterial = null    // toolpath line material (for live travel show/hide)
+let showRulers   = true    // CAD-style rulers along the top + left edges (mm)
+let lastRulerSig = ''      // redraw the rulers only when the view actually changes
 
 // Head speeds + raster pitch from the selected printer/material (profiles.js).
 // Default to the placeholders until a material is chosen.
@@ -964,6 +977,90 @@ async function handleDownloadRequest() {
   }
 }
 
+// ── Rulers ──────────────────────────────────────────────────────────────────
+// Toggle: show/hide the CAD rulers. animate() picks up the change next frame.
+const handleRulersChanged = (enabled) => { showRulers = enabled !== false }
+
+// "Nice" tick spacing (1/2/5 ×10ⁿ mm) so a major tick lands ~targetPx apart.
+const niceStep = (worldPerPx, targetPx) => {
+  const raw = worldPerPx * targetPx
+  const pow = Math.pow(10, Math.floor(Math.log10(raw)))
+  const f = raw / pow
+  return (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * pow
+}
+
+// Draw the top + left rulers (mm) into the 2D overlay canvas. Minimal: just tick
+// marks at the very top/left edge with the number beside them (below / to the
+// right), and only ALONG THE BED (no ticks past the print area). Origin is the
+// bed's top-left corner: X right, Y down (world y is negative down → label -wy).
+// Cheap, and only redrawn when the view actually changes.
+const TICK_PX = 7   // length of a ruler tick
+
+const drawRulers = () => {
+  const cv = rulerCanvas.value
+  if (!cv || !camera) return
+
+  // Skip the redraw entirely while nothing relevant changed.
+  const sig = showRulers
+    ? `on|${isDark}|${canvWidth}x${canvHeight}|${camera.zoom.toFixed(5)}`
+      + `|${camera.position.x.toFixed(2)},${camera.position.y.toFixed(2)}|${cutterW}x${cutterH}`
+    : 'off'
+  if (sig === lastRulerSig) return
+  lastRulerSig = sig
+
+  const dpr = window.devicePixelRatio || 1
+  const wantW = Math.round(canvWidth * dpr), wantH = Math.round(canvHeight * dpr)
+  if (cv.width !== wantW || cv.height !== wantH) { cv.width = wantW; cv.height = wantH }
+  const ctx = cv.getContext('2d')
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  ctx.clearRect(0, 0, canvWidth, canvHeight)
+  if (!showRulers) return
+
+  const tickCol = isDark ? '#7a7f87' : '#9aa0a6'
+  const textCol = isDark ? '#c8ccd2' : '#5a5e66'
+
+  const worldPerPx = (VIEW_REF_HALF_H * 2) / (camera.zoom * canvHeight)
+  const worldLeft = camera.position.x - (canvWidth / 2) * worldPerPx
+  const worldTop  = camera.position.y + (canvHeight / 2) * worldPerPx
+  const worldBottom = worldTop - canvHeight * worldPerPx
+  const step = niceStep(worldPerPx, 80)
+  const fmt = (v) => (step >= 1 ? String(Math.round(v)) : v.toFixed(1))
+
+  ctx.strokeStyle = tickCol
+  ctx.fillStyle = textCol
+  ctx.lineWidth = 1
+  ctx.font = '10px "Courier New", monospace'
+
+  // Top ruler — world X in [0, cutterW] only; tick at the top edge, number below.
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'top'
+  ctx.beginPath()
+  for (let wx = Math.ceil(Math.max(0, worldLeft) / step) * step; wx <= cutterW + 1e-6; wx += step) {
+    const px = (wx - worldLeft) / worldPerPx
+    if (px > canvWidth) break
+    ctx.moveTo(Math.round(px) + 0.5, 0)
+    ctx.lineTo(Math.round(px) + 0.5, TICK_PX)
+    ctx.fillText(fmt(wx), Math.round(px), TICK_PX + 2)
+  }
+  ctx.stroke()
+
+  // Left ruler — world Y in [-cutterH, 0] only; tick at the left edge, number right.
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'middle'
+  ctx.beginPath()
+  const wyTop = Math.min(0, worldTop)
+  const wyBot = Math.max(-cutterH, worldBottom)
+  for (let wy = Math.floor(wyTop / step) * step; wy >= wyBot - 1e-6; wy -= step) {
+    if (wy > 1e-6) continue
+    const py = (worldTop - wy) / worldPerPx
+    if (py < 0 || py > canvHeight) continue
+    ctx.moveTo(0, Math.round(py) + 0.5)
+    ctx.lineTo(TICK_PX, Math.round(py) + 0.5)
+    ctx.fillText(fmt(-wy), TICK_PX + 3, Math.round(py))
+  }
+  ctx.stroke()
+}
+
 // ── Animate ───────────────────────────────────────────────────────────────────
 const animate = () => {
   requestAnimationFrame(animate)
@@ -985,6 +1082,7 @@ const animate = () => {
   updateHeadMarker()   // follow the head (also keeps a constant on-screen size)
   controls.update()
   renderer.render(scene, camera)
+  drawRulers()         // 2D overlay; cheap no-op when the view is unchanged
 }
 
 // ── Resize ────────────────────────────────────────────────────────────────────
@@ -1009,6 +1107,7 @@ onMounted(() => {
   eventBus.on('debug-colors-changed', handleDebugColorsChanged)
   eventBus.on('show-travel-changed', handleShowTravelChanged)
   eventBus.on('speed-gradient-changed', handleSpeedGradientChanged)
+  eventBus.on('rulers-changed',     handleRulersChanged)
   eventBus.on('fix-colors',         handleFixColors)
   eventBus.on('doubles-detect',     handleDoublesDetect)
   eventBus.on('doubles-remove',     handleDoublesRemove)
@@ -1031,6 +1130,7 @@ onBeforeUnmount(() => {
   eventBus.off('debug-colors-changed', handleDebugColorsChanged)
   eventBus.off('show-travel-changed', handleShowTravelChanged)
   eventBus.off('speed-gradient-changed', handleSpeedGradientChanged)
+  eventBus.off('rulers-changed',     handleRulersChanged)
   eventBus.off('fix-colors',         handleFixColors)
   eventBus.off('doubles-detect',     handleDoublesDetect)
   eventBus.off('doubles-remove',     handleDoublesRemove)

@@ -38,6 +38,7 @@ const messages = {
     selectThickness: 'Stärke wählen',
     option: 'Option',
     options: 'Optionen',
+    showRulers: 'Lineale anzeigen',
     optimizePath: 'Pfadreihenfolge optimieren',
     rasterBlock: 'Raster als Block',
     showTravel: 'Leerwege anzeigen',
@@ -52,6 +53,7 @@ const messages = {
     noDoubles: 'Keine Dopplungen',
     uploadError: 'Fehler beim Hochladen der Datei: ',
     // Tooltips
+    tipRulers: 'Zeigt Lineale (mm) am oberen und linken Rand des Ansichtsfensters an.',
     tipOptimize: 'Wenn aktiv, ahmt den Pfad-Optimierer des Druckers nach (kürzeste Wege). Sonst werden Pfade in Dateireihenfolge geschnitten.',
     tipRaster: 'Zeichnet Gravur (grün/Graustufen) als einen sich füllenden Block statt der Hin-und-her-Linien. Schneller.',
     tipShowTravel: 'Zeigt die Leerwege (Eilgänge ohne Laser) als gepunktete Linien an.',
@@ -99,6 +101,7 @@ const messages = {
     selectThickness: 'Select Thickness',
     option: 'option',
     options: 'options',
+    showRulers: 'Show rulers',
     optimizePath: 'Optimize path order',
     rasterBlock: 'Raster as solid block',
     showTravel: 'Show travel moves',
@@ -113,6 +116,7 @@ const messages = {
     noDoubles: 'No doubles',
     uploadError: 'Error uploading file: ',
     // Tooltips
+    tipRulers: 'Shows rulers (mm) along the top and left edges of the viewport.',
     tipOptimize: "When on, mimics the printer's path optimiser (shortest travel). When off, paths are cut in file order.",
     tipRaster: 'Draw engraving (green/grayscale) as one solid block that fills up, instead of the back-and-forth scan lines. Faster.',
     tipShowTravel: 'Shows the travel moves (rapid moves without the laser) as dotted lines.',
