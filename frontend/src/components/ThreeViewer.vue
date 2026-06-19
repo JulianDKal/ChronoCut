@@ -18,7 +18,7 @@ import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import * as THREE from 'three'
 import eventBus from '../eventBus'
-import { buildToolpath, flattenPrim, isGreen, SPEED_MM_S, fixColors, computeDoubleRemoval } from '../toolpath'
+import { buildToolpath, flattenPrim, isGreen, SPEED_MM_S, fixColors, computeDoubleRemoval, rotateData, removeWhite, rampedTime } from '../toolpath'
 
 const container = ref(null)
 const canvas    = ref(null)
@@ -41,6 +41,12 @@ let currentData = null
 let optimizePath = false
 let rasterBlock  = false   // draw raster regions as a filling block vs scan lines
 let debugColors  = false   // colour every segment randomly (to count them)
+
+// Head speeds + raster pitch from the selected printer/material (profiles.js).
+// Default to the placeholders until a material is chosen.
+let currentSpeeds = SPEED_MM_S
+let currentRasterPitch = undefined   // undefined → buildToolpath default
+let currentAccel = 0                 // mm/s² (0 → constant-speed timing)
 
 // Travel "Leerwege" are drawn as dotted gray lines: dash on/off length in mm.
 const TRAVEL_DASH = 3
@@ -288,11 +294,36 @@ const drawCutterFrame = () => {
 
 // ── Cutter selection ──────────────────────────────────────────────────────────
 const handleCutterSelected = (cutter) => {
-  cutterW = cutter.widthMm
-  cutterH = cutter.heightMm
+  cutterW = cutter.bedWidth
+  cutterH = cutter.bedHeight
   drawCutterFrame()
   // Re-frame on the content if a design is loaded, otherwise on the new bed.
   frameBox(contentBox || bedBox())
+  checkFit()
+}
+
+// ── Material/printer speeds ───────────────────────────────────────────────────
+const handleSpeedsChanged = ({ speeds, rasterPitch, accel } = {}) => {
+  if (speeds) currentSpeeds = speeds
+  currentRasterPitch = rasterPitch
+  currentAccel = accel || 0
+  if (currentData) drawObjects(currentData)   // keeps timeline position
+}
+
+// ── Fit check (does the design fit the bed, maybe only rotated?) ──────────────
+const checkFit = () => {
+  if (!contentBox) { eventBus.emit('fit-status', { ok: true }); return }
+  const bw = contentBox.maxX - contentBox.minX
+  const bh = contentBox.maxY - contentBox.minY
+  const TOL = 0.5  // mm slack
+  const fitsAsIs = bw <= cutterW + TOL && bh <= cutterH + TOL
+  const fitsRot  = bw <= cutterH + TOL && bh <= cutterW + TOL
+  if (fitsAsIs) eventBus.emit('fit-status', { ok: true })
+  else eventBus.emit('fit-status', {
+    ok: false, canRotate: fitsRot,
+    design: { w: Math.round(bw), h: Math.round(bh) },
+    bed: { w: cutterW, h: cutterH },
+  })
 }
 
 // ── Lines / objects update ────────────────────────────────────────────────────
@@ -303,6 +334,28 @@ const handleLinesUpdate = (lines) => {
   // Centre + fit the view on the freshly loaded design.
   contentBox = computeContentBBox(lines)
   frameBox(contentBox || bedBox())
+  checkFit()
+}
+
+// ── Rotate the whole design 90° (offered when it only fits rotated) ───────────
+const handleRotateDesign = (dir) => {
+  if (!currentData) return
+  currentData = rotateData(currentData, dir === 'ccw' ? 'ccw' : 'cw')
+  clearHighlight()
+  drawObjects(currentData)
+  contentBox = computeContentBBox(currentData)
+  frameBox(contentBox || bedBox())
+  checkFit()
+}
+
+// ── Remove white elements (watermark cleanup) ─────────────────────────────────
+const handleRemoveWhite = () => {
+  if (!currentData) return
+  currentData = removeWhite(currentData)
+  clearHighlight()
+  drawObjects(currentData)
+  contentBox = computeContentBBox(currentData)
+  checkFit()
 }
 
 // Toggle: optimise the cut order (mimic the printer's path optimiser) vs cut in
@@ -552,17 +605,22 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
       }
     } else if (obj.type === 'img') {
       const texture = new THREE.TextureLoader().load(obj.data)
-      // obj.x/obj.y is the top-left corner (x right, y down as negative).
-      const geo = new THREE.PlaneGeometry(obj.w, obj.h)
+      // obj.x/obj.y is the top-left corner (x right, y down as negative). When the
+      // design was rotated, obj.rot says by how much; the plane keeps the image's
+      // own dimensions and the mesh is rotated to fill the (swapped) footprint.
+      const r = (((obj.rot || 0) % 360) + 360) % 360
+      const swap = r === 90 || r === 270
+      const geo = new THREE.PlaneGeometry(swap ? obj.h : obj.w, swap ? obj.w : obj.h)
       const mat = new THREE.MeshBasicMaterial({ map: texture, transparent: false })
       const mesh = new THREE.Mesh(geo, mat)
       mesh.position.set(obj.x + obj.w / 2, obj.y - obj.h / 2, obj.is_background ? -0.1 : 0.01)
+      if (r) mesh.rotation.z = r * Math.PI / 180
       drawingGroup.add(mesh)
     }
   })
 
   // ── Toolpath: ordered machine moves (engrave → cut, optional optimise) ────
-  const { moves, stats } = buildToolpath(data, { optimize: optimizePath })
+  const { moves, stats } = buildToolpath(data, { optimize: optimizePath, speeds: currentSpeeds, rasterPitch: currentRasterPitch, accel: currentAccel })
 
   // Expand moves into a single ordered segment stream. Each vertex also carries
   // its cumulative TIME along the toolpath (aTime); the shader reveals every
@@ -593,7 +651,8 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
   }
 
   for (const m of moves) {
-    const speed = SPEED_MM_S[m.kind] || SPEED_MM_S.other
+    const speed = (m.category === 'raster' ? (currentSpeeds.raster ?? currentSpeeds.engrave)
+                                           : currentSpeeds[m.kind]) || currentSpeeds.other || SPEED_MM_S.other
 
     if (m.category === 'raster' && rasterBlock && m.bbox) {
       // Engrave region as a filling block: skip the serpentine segments, record
@@ -601,7 +660,7 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
       // so the overall timeline is identical to the scan-line version.
       let len = 0
       for (const prim of m.prims) len += Math.hypot(prim.b.x - prim.a.x, prim.b.y - prim.a.y)
-      const dur = len / speed
+      const dur = rampedTime(len, speed, currentAccel)
       rasterBlocks.push({ bbox: m.bbox, t0: runTime, t1: runTime + dur, color: lineRGB(m.color) })
       runTime += dur
       continue
@@ -615,17 +674,25 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
       const a = m.a, b = m.b
       const full = Math.hypot(b.x - a.x, b.y - a.y)
       if (full < 1e-6) continue
-      pushSeg(a.x, a.y, b.x, b.y, lineRGB(m.color), full / speed, 1, full)
+      pushSeg(a.x, a.y, b.x, b.y, lineRGB(m.color), rampedTime(full, speed, currentAccel), 1, full)
     } else {
-      // Beam-on path: tessellate each primitive (lines stay lines; beziers are
-      // adaptively flattened by arc length so they render as smooth curves).
+      // Beam-on path: tessellate each primitive, then distribute the path's total
+      // (acceleration-aware) duration across its sub-segments by length so the
+      // playback total matches the time estimate exactly.
       const rgb = lineRGB(m.color)
+      const segs = []
+      let moveLen = 0
       for (const prim of m.prims) {
         const pts = flattenPrim(prim)
         for (let i = 0; i < pts.length - 1; i++) {
           const p = pts[i], q = pts[i + 1]
-          pushSeg(p.x, p.y, q.x, q.y, rgb, Math.hypot(q.x - p.x, q.y - p.y) / speed)
+          const L = Math.hypot(q.x - p.x, q.y - p.y)
+          segs.push([p, q, L]); moveLen += L
         }
+      }
+      const moveDur = rampedTime(moveLen, speed, currentAccel)
+      for (const [p, q, L] of segs) {
+        pushSeg(p.x, p.y, q.x, q.y, rgb, moveLen > 0 ? moveDur * (L / moveLen) : 0)
       }
     }
   }
@@ -832,6 +899,9 @@ onMounted(() => {
   window.addEventListener('resize', handleResize)
   eventBus.on('lines-updated',      handleLinesUpdate)
   eventBus.on('cutter-selected',    handleCutterSelected)
+  eventBus.on('speeds-changed',     handleSpeedsChanged)
+  eventBus.on('rotate-design',      handleRotateDesign)
+  eventBus.on('remove-white',       handleRemoveWhite)
   eventBus.on('save_pdf_request',   handleDownloadRequest)
   eventBus.on('optimize-changed',   handleOptimizeChanged)
   eventBus.on('raster-mode-changed', handleRasterModeChanged)
@@ -849,6 +919,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', handleResize)
   eventBus.off('lines-updated',      handleLinesUpdate)
   eventBus.off('cutter-selected',    handleCutterSelected)
+  eventBus.off('speeds-changed',     handleSpeedsChanged)
+  eventBus.off('rotate-design',      handleRotateDesign)
+  eventBus.off('remove-white',       handleRemoveWhite)
   eventBus.off('save_pdf_request',   handleDownloadRequest)
   eventBus.off('optimize-changed',   handleOptimizeChanged)
   eventBus.off('raster-mode-changed', handleRasterModeChanged)

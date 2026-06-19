@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Self-contained printer file: machine specs (the <printer> attributes) plus all
+  material presets
+
+  <printer> attributes:
+    id, name        identity (name is shown in the dropdown)
+    powerW          laser power in watts (informational)
+    bedWidth/Height usable bed size in mm
+    maxSpeed        head MAX absolute speed in mm/s (travel + "%" material speeds)
+    accel           head acceleration in mm/s² (time estimate; 0 = ignore)
+
+  Materials are grouped by family, with one <thickness> per option. Each
+  operation (<cut>/<engrave>/<raster>) has speed + power; speed unit is "mm/s"
+  or "%" (of maxSpeed). <raster> also takes pitch (mm) or dpi.
+-->
+<printer id="george" name="George" powerW="120" bedWidth="1016" bedHeight="711" maxSpeed="250" accel="3000">
+  <materials>
+    <material name="Plywood">
+      <thickness value="3 mm" id="ply3">
+        <cut     speed="55"  unit="mm/s" power="60"/>
+        <engrave speed="120" unit="mm/s" power="30"/>
+        <raster  speed="300" unit="mm/s" power="28" pitch="0.5"/>
+      </thickness>
+    </material>
+    <material name="Acrylic">
+      <thickness value="5 mm" id="acr5">
+        <cut     speed="35"  unit="%"    power="100"/>
+        <engrave speed="50"  unit="%"    power="25"/>
+        <raster  speed="280" unit="mm/s" power="25" dpi="50"/>
+      </thickness>
+    </material>
+    <material name="Leather">
+      <thickness value="2 mm" id="leather2">
+        <cut     speed="45"  unit="mm/s" power="45"/>
+        <engrave speed="150" unit="mm/s" power="20"/>
+        <raster  speed="320" unit="mm/s" power="18" pitch="0.5"/>
+      </thickness>
+    </material>
+  </materials>
+</printer>

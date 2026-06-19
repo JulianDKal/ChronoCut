@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Self-contained printer file: machine specs (the <printer> attributes) plus all
+  material presets
+
+  <printer> attributes:
+    id, name        identity (name is shown in the dropdown)
+    powerW          laser power in watts (informational)
+    bedWidth/Height usable bed size in mm
+    maxSpeed        head MAX absolute speed in mm/s (travel + "%" material speeds)
+    accel           head acceleration in mm/s² (time estimate; 0 = ignore)
+
+  Materials are grouped by family, with one <thickness> per option. Each
+  operation (<cut>/<engrave>/<raster>) has speed + power; speed unit is "mm/s"
+  or "%" (of maxSpeed). <raster> also takes pitch (mm) or dpi.
+-->
+<printer id="edgar" name="Edgar" powerW="60" bedWidth="1016" bedHeight="711" maxSpeed="250" accel="10">
+  <materials>
+    <material name="Plywood">
+      <thickness value="3 mm" id="ply3">
+        <cut     speed="30"  unit="mm/s" power="80"/>
+        <engrave speed="80"  unit="mm/s" power="40"/>
+        <raster  speed="200" unit="mm/s" power="35" pitch="0.6"/>
+      </thickness>
+      <thickness value="6 mm" id="ply6">
+        <cut     speed="15"  unit="mm/s" power="95"/>
+        <engrave speed="80"  unit="mm/s" power="40"/>
+        <raster  speed="200" unit="mm/s" power="35" pitch="0.6"/>
+      </thickness>
+    </material>
+    <material name="Acrylic">
+      <thickness value="3 mm" id="acr3">
+        <cut     speed="40"  unit="%"    power="100"/>
+        <engrave speed="60"  unit="%"    power="30"/>
+        <raster  speed="220" unit="mm/s" power="30" dpi="42"/>
+      </thickness>
+      <thickness value="5 mm" id="acr5">
+        <cut     speed="28"  unit="%"    power="100"/>
+        <engrave speed="60"  unit="%"    power="30"/>
+        <raster  speed="220" unit="mm/s" power="30" dpi="42"/>
+      </thickness>
+    </material>
+    <material name="Cardboard">
+      <thickness value="standard" id="card">
+        <cut     speed="60"  unit="%"    power="50"/>
+        <engrave speed="80"  unit="%"    power="20"/>
+        <raster  speed="250" unit="mm/s" power="20" pitch="0.5"/>
+      </thickness>
+    </material>
+    <material name="Test">
+      <thickness value="1" id="test">
+        <cut     speed="50"  unit="%"    power="50"/>
+        <engrave speed="100" unit="%"    power="20"/>
+        <raster  speed="100" unit="%"    power="20" pitch="0.5"/>
+      </thickness>
+    </material>
+  </materials>
+</printer>

@@ -7,11 +7,25 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import functools
 import json
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from .utils import rgb_to_hex
 
 router = APIRouter()
 executor = ThreadPoolExecutor(max_workers=2)
+
+# Watermark phrases to strip live in backend/watermarks.xml (one <text> each).
+WATERMARKS_FILE = Path(__file__).resolve().parent.parent / "watermarks.xml"
+
+def _load_watermark_phrases():
+    try:
+        if not WATERMARKS_FILE.is_file():
+            return []
+        root = ET.parse(WATERMARKS_FILE).getroot()
+        return [(t.text or "").strip() for t in root.iter("text") if (t.text or "").strip()]
+    except Exception as e:
+        print(f"[watermark] load failed: {e}")
+        return []
 
 # 1 PDF/MuPDF point = 25.4/72 mm
 MM_PER_PT = 25.4 / 72
@@ -32,6 +46,52 @@ def pt2mm(v: float) -> float:
     return round(v * MM_PER_PT, 3)
 
 
+# ── Watermark stripping ───────────────────────────────────────────────────────
+# Find the (mm) bounding boxes of watermark phrases on a page, then drop any
+# extracted vector/text whose centre lands inside one. Coordinates match the
+# norm_x/norm_y space used for the objects.
+
+def _watermark_boxes(page, watermarks):
+    boxes = []
+    for txt in (watermarks or []):
+        t = (txt or "").strip()
+        if not t:
+            continue
+        try:
+            for r in page.search_for(t):   # case-insensitive; returns Rects in points
+                xs = sorted((norm_x(r.x0), norm_x(r.x1)))
+                ys = sorted((norm_y(r.y0), norm_y(r.y1)))
+                boxes.append((xs[0] - 0.5, ys[0] - 0.5, xs[1] + 0.5, ys[1] + 0.5))
+        except Exception as e:
+            print(f"[watermark] search '{t}' failed: {e}")
+    return boxes
+
+
+def _obj_center(o: Dict):
+    t = o.get("type")
+    if t == "l":
+        return (o["x1"] + o["x2"]) / 2, (o["y1"] + o["y2"]) / 2
+    if t == "c":
+        return (o["x1"] + o["x2"] + o["x3"] + o["x4"]) / 4, (o["y1"] + o["y2"] + o["y3"] + o["y4"]) / 4
+    if t == "fp":
+        xs = [c["x"] for c in o["path"] if "x" in c]
+        ys = [c["y"] for c in o["path"] if "y" in c]
+        if not xs:
+            return None
+        return (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+    return None
+
+
+def _in_watermark(o: Dict, boxes) -> bool:
+    if o.get("type") not in ("l", "c", "fp"):
+        return False
+    ctr = _obj_center(o)
+    if ctr is None:
+        return False
+    x, y = ctr
+    return any(x0 <= x <= x1 and y0 <= y <= y1 for (x0, y0, x1, y1) in boxes)
+
+
 # ── Endpoint ──────────────────────────────────────────────────────────────────
 
 @router.post("/pdf_extraction")
@@ -39,7 +99,8 @@ async def extract_pdf_lines(file: UploadFile = File(...)):
     """Extract paths and images from a PDF or SVG. Coords in mm, origin top-left.
 
     Text is converted to filled vector paths automatically (via MuPDF's
-    text_as_path SVG export), preserving the original fill colour.
+    text_as_path SVG export), preserving the original fill colour. Any text/vector
+    inside a region matching a phrase in backend/watermarks.xml is dropped.
     """
     name = file.filename.lower()
     if name.endswith(".pdf"):
@@ -49,12 +110,14 @@ async def extract_pdf_lines(file: UploadFile = File(...)):
     else:
         raise HTTPException(status_code=400, detail="Only PDF and SVG files are allowed")
 
+    wm = _load_watermark_phrases()
+
     contents = await file.read()
     try:
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             executor,
-            functools.partial(extract_sync, filetype=filetype),
+            functools.partial(extract_sync, filetype=filetype, watermarks=wm),
             contents,
         )
     except Exception as e:
@@ -66,7 +129,7 @@ async def extract_pdf_lines(file: UploadFile = File(...)):
 
 # ── Sync extraction (runs in thread pool) ────────────────────────────────────
 
-def extract_sync(file_bytes: bytes, filetype: str = "pdf") -> dict:
+def extract_sync(file_bytes: bytes, filetype: str = "pdf", watermarks=None) -> dict:
     doc = pymupdf.open(stream=file_bytes, filetype=filetype)
     objects: List[Dict] = []
     page_num = 0
@@ -84,6 +147,8 @@ def extract_sync(file_bytes: bytes, filetype: str = "pdf") -> dict:
 
         for page_num in range(len(doc)):
             page = doc[page_num]
+            wm_boxes = _watermark_boxes(page, watermarks)
+            start = len(objects)
 
             # Vectors + text → convert text to paths via SVG round-trip, then
             # extract all drawings from the SVG (glyphs become filled paths).
@@ -112,6 +177,15 @@ def extract_sync(file_bytes: bytes, filetype: str = "pdf") -> dict:
                         objects.append(entry)
             except Exception as e:
                 print(f"[extract] image extraction failed: {e}")
+
+            # Drop vectors/text that fall inside a watermark text region.
+            if wm_boxes:
+                kept = [o for o in objects[start:] if not _in_watermark(o, wm_boxes)]
+                removed = len(objects) - start - len(kept)
+                if removed:
+                    print(f"[extract] page {page_num}: removed {removed} watermark objects")
+                del objects[start:]
+                objects.extend(kept)
 
     finally:
         _save_debug(objects, page_num)

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Watermark text to strip on upload (e.g. ArchiCAD educational-version stamps).
+  Add one <text> per phrase. Matching is case-insensitive and matches a substring
+  of a text line on the page; any vector/text inside a matching region is removed
+  during extraction. Leave empty to disable.
+
+  Add the exact phrases your exports contain, for example:
+    <text>EDUCATIONAL VERSION</text>
+    <text>CREATED WITH AN EDUCATIONAL VERSION OF GRAPHISOFT ARCHICAD</text>
+-->
+<watermarks>
+  <text>EDUCATIONAL VERSION</text>
+</watermarks>

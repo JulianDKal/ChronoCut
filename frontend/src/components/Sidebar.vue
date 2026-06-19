@@ -8,7 +8,7 @@
 
       <!-- Cutter Dropdown -->
       <div class="dropdown-wrapper" ref="cutterRef">
-        <button class="dropdown-toggle" @click="cutterOpen = !cutterOpen">
+        <button class="dropdown-toggle" @click="toggleDropdown('cutter')">
           <span class="btn-text">{{ selectedCutter ? selectedCutter.name : 'Select Cutter' }}</span>
           <span class="arrow" :class="{ rotated: cutterOpen }">▾</span>
         </button>
@@ -21,26 +21,59 @@
             @click="selectCutter(c)"
           >
             <span class="item-name">{{ c.name }}</span>
-            <span class="item-detail">{{ c.power }}W · {{ c.widthMm }}×{{ c.heightMm }}mm</span>
+            <span class="item-detail">{{ c.powerW }}W · {{ c.bedWidth }}×{{ c.bedHeight }}mm</span>
           </div>
         </div>
       </div>
 
-      <!-- Material Dropdown -->
+      <!-- Material (searchable) -->
       <div class="dropdown-wrapper" ref="materialRef">
-        <button class="dropdown-toggle" @click="materialOpen = !materialOpen">
-          <span class="btn-text">{{ selectedMaterial ? selectedMaterial.name : 'Select Material' }}</span>
+        <button class="dropdown-toggle" @click="toggleDropdown('material')">
+          <span class="btn-text">{{ selectedFamily ? selectedFamily.name : 'Select Material' }}</span>
           <span class="arrow" :class="{ rotated: materialOpen }">▾</span>
         </button>
         <div class="dropdown-menu" v-show="materialOpen">
+          <input
+            ref="materialSearchRef"
+            v-model="materialSearch"
+            class="dropdown-search"
+            type="text"
+            placeholder="Search material…"
+            @click.stop
+          />
+          <div v-if="filteredFamilies.length === 0" class="dropdown-empty">No match</div>
           <div
-            v-for="m in materials"
-            :key="m.id"
+            v-for="f in filteredFamilies"
+            :key="f.name"
             class="dropdown-item"
-            :class="{ active: selectedMaterial?.id === m.id }"
-            @click="selectMaterial(m)"
+            :class="{ active: selectedFamily?.name === f.name }"
+            @click="selectFamily(f)"
           >
-            <span class="item-name">{{ m.name }}</span>
+            <span class="item-name">{{ f.name }}</span>
+            <span class="item-detail">{{ f.thicknesses.length }} option{{ f.thicknesses.length === 1 ? '' : 's' }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Thickness (depends on the chosen material) -->
+      <div class="dropdown-wrapper" ref="thicknessRef">
+        <button
+          class="dropdown-toggle"
+          :disabled="!selectedFamily"
+          @click="selectedFamily && toggleDropdown('thickness')"
+        >
+          <span class="btn-text">{{ selectedThickness ? selectedThickness.label : (selectedFamily ? 'Select Thickness' : '—') }}</span>
+          <span class="arrow" :class="{ rotated: thicknessOpen }">▾</span>
+        </button>
+        <div class="dropdown-menu" v-show="thicknessOpen">
+          <div
+            v-for="t in (selectedFamily?.thicknesses || [])"
+            :key="t.id"
+            class="dropdown-item"
+            :class="{ active: selectedThickness?.id === t.id }"
+            @click="selectThickness(t)"
+          >
+            <span class="item-name">{{ t.label }}</span>
           </div>
         </div>
       </div>
@@ -79,38 +112,42 @@
         :title="'Snappt fast-rote/-blaue Linien und fast-grüne Flächen auf reines Rot/Blau/Grün.'">
         <span class="btn-text">Fix Colors</span>
       </button>
+      <button class="sidebar-btn" @click="handleRemoveWhite" :disabled="isLoading"
+        :title="'Entfernt (fast) weiße Linien/Flächen (oft Wasserzeichen/Artefakte).'">
+        <span class="btn-text">Remove White</span>
+      </button>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import eventBus from '../eventBus'
+import { loadProfiles, speedsFor } from '../profiles'
 
 // ── State ─────────────────────────────────────────────────────────────────────
 const isLoading = ref(false)
 const cutterOpen = ref(false)
 const materialOpen = ref(false)
+const thicknessOpen = ref(false)
 const cutterRef = ref(null)
 const materialRef = ref(null)
+const thicknessRef = ref(null)
+const materialSearchRef = ref(null)
 
-// ── Data ──────────────────────────────────────────────────────────────────────
-const cutters = [
-  { id: 'edgar',  name: 'Edgar',  power: 60,  widthMm: 1000, heightMm: 700 },
-  { id: 'george', name: 'George', power: 120, widthMm: 1000, heightMm: 700 },
-]
+// Printers + materials are loaded from /public XML at startup (profiles.js).
+const cutters   = ref([])
+const materials = ref([])      // material families of the currently selected cutter
+const materialSearch = ref('')
 
-const materials = [
-  { id: 'plywood3',  name: 'Plywood 3mm' },
-  { id: 'plywood6',  name: 'Plywood 6mm' },
-  { id: 'acrylic3',  name: 'Acrylic 3mm' },
-  { id: 'acrylic5',  name: 'Acrylic 5mm' },
-  { id: 'cardboard', name: 'Cardboard' },
-  { id: 'leather2',  name: 'Leather 2mm' },
-]
+const selectedCutter    = ref(null)
+const selectedFamily    = ref(null)   // chosen material family
+const selectedThickness = ref(null)   // chosen thickness preset (carries the speeds)
 
-const selectedCutter   = ref(null)
-const selectedMaterial = ref(null)
+const filteredFamilies = computed(() => {
+  const q = materialSearch.value.trim().toLowerCase()
+  return q ? materials.value.filter((f) => f.name.toLowerCase().includes(q)) : materials.value
+})
 
 // Path optimisation toggle (default off — printer cuts in file order)
 const optimizePath = ref(false)
@@ -130,23 +167,54 @@ const onDebugColorsChange = () => {
   eventBus.emit('debug-colors-changed', debugColors.value)
 }
 
-// ── Cutter / Material selection ───────────────────────────────────────────────
+// ── Cutter / Material / Thickness selection ───────────────────────────────────
+// Resolve + broadcast the head speeds for the current printer + thickness preset.
+const emitSpeeds = () => {
+  if (!selectedCutter.value || !selectedThickness.value) return
+  eventBus.emit('speeds-changed', speedsFor(selectedCutter.value, selectedThickness.value))
+}
+
 const selectCutter = (cutter) => {
   selectedCutter.value = cutter
   cutterOpen.value = false
-  eventBus.emit('cutter-selected', cutter)
+  materials.value = cutter.materials || []
+  selectedFamily.value = null
+  selectedThickness.value = null
+  // Bed size drives the viewer frame + fit check.
+  eventBus.emit('cutter-selected', { name: cutter.name, bedWidth: cutter.bedWidth, bedHeight: cutter.bedHeight })
+  // Default to this printer's first material (also picks a thickness + emits speeds).
+  if (materials.value.length) selectFamily(materials.value[0])
 }
 
-const selectMaterial = (material) => {
-  selectedMaterial.value = material
+// Open the requested dropdown and close the others (so they never overlap).
+const toggleDropdown = (which) => {
+  cutterOpen.value    = which === 'cutter'    ? !cutterOpen.value    : false
+  materialOpen.value  = which === 'material'  ? !materialOpen.value  : false
+  thicknessOpen.value = which === 'thickness' ? !thicknessOpen.value : false
+  if (materialOpen.value) nextTick(() => materialSearchRef.value?.focus())
+}
+
+const selectFamily = (fam) => {
+  selectedFamily.value = fam
   materialOpen.value = false
-  eventBus.emit('material-selected', material)
+  materialSearch.value = ''
+  selectedThickness.value = null
+  // Auto-pick the first thickness so speeds are valid immediately; the user can
+  // change it via the thickness dropdown.
+  if (fam.thicknesses.length) selectThickness(fam.thicknesses[0])
+}
+
+const selectThickness = (t) => {
+  selectedThickness.value = t
+  thicknessOpen.value = false
+  emitSpeeds()
 }
 
 // Close dropdowns when clicking outside
 const handleDocClick = (e) => {
-  if (cutterRef.value && !cutterRef.value.contains(e.target))   cutterOpen.value = false
-  if (materialRef.value && !materialRef.value.contains(e.target)) materialOpen.value = false
+  if (cutterRef.value && !cutterRef.value.contains(e.target))       cutterOpen.value = false
+  if (materialRef.value && !materialRef.value.contains(e.target))   materialOpen.value = false
+  if (thicknessRef.value && !thicknessRef.value.contains(e.target)) thicknessOpen.value = false
 }
 
 // ── Upload ────────────────────────────────────────────────────────────────────
@@ -212,15 +280,19 @@ const onDoublesResult = ({ count, fromDetect }) => {
 
 const resetDoubles = () => { doublesArmed.value = false; doublesCount.value = 0; doublesHint.value = '' }
 
-// ── Fix Colors ────────────────────────────────────────────────────────────────
-const handleFixColors = () => eventBus.emit('fix-colors')
+// ── Fix Colors / Remove White ─────────────────────────────────────────────────
+const handleFixColors  = () => eventBus.emit('fix-colors')
+const handleRemoveWhite = () => eventBus.emit('remove-white')
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
-onMounted(() => {
+onMounted(async () => {
   document.addEventListener('click', handleDocClick)
   eventBus.on('doubles-result', onDoublesResult)
-  // Defer so ThreeViewer has time to register its listener first
-  setTimeout(() => selectCutter(cutters[0]), 0)
+  const { printers } = await loadProfiles()
+  cutters.value = printers
+  // The awaits above already defer past ThreeViewer's onMounted, so its listeners
+  // are registered; select the first printer (also picks its first material).
+  if (cutters.value.length) selectCutter(cutters.value[0])
 })
 
 onBeforeUnmount(() => {
@@ -325,7 +397,27 @@ onBeforeUnmount(() => {
   cursor: pointer;
   transition: background 0.2s;
 }
-.dropdown-toggle:hover { background: var(--hover-bg); }
+.dropdown-toggle:hover:not(:disabled) { background: var(--hover-bg); }
+.dropdown-toggle:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Search field inside the material dropdown */
+.dropdown-search {
+  width: calc(100% - 16px);
+  margin: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--dropdown-border);
+  border-radius: 6px;
+  background: var(--panel-bg);
+  color: var(--text-strong);
+  font-size: 13px;
+  outline: none;
+  box-sizing: border-box;
+}
+.dropdown-empty {
+  padding: 10px 16px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
 
 .arrow {
   margin-left: auto;

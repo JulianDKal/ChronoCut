@@ -23,6 +23,16 @@
           {{ isDark ? '☀' : '☾' }}
         </button>
 
+        <!-- Fit / rotate banner (top-centre) -->
+        <div v-if="fit && !fit.ok" class="fit-banner" :class="{ error: !fit.canRotate }">
+          <template v-if="fit.canRotate">
+            <span class="fit-msg">Passt nur gedreht ({{ fit.design.w }}×{{ fit.design.h }} mm auf {{ fit.bed.w }}×{{ fit.bed.h }} mm Bett)</span>
+            <button class="fit-btn" @click="rotate('ccw')">90° ⟲ links</button>
+            <button class="fit-btn" @click="rotate('cw')">90° ⟳ rechts</button>
+          </template>
+          <span v-else class="fit-msg">⚠ Design ({{ fit.design.w }}×{{ fit.design.h }} mm) ist größer als die Platte ({{ fit.bed.w }}×{{ fit.bed.h }} mm).</span>
+        </div>
+
         <!-- Floating control islands over the preview -->
         <div class="floating-dock" :class="{ 'is-disabled': !hasContent }">
           <div class="island island--timeline">
@@ -58,6 +68,12 @@ const onStats = (stats) => { segmentCount.value = stats?.segments ?? 0 }
 const showDebug = ref(false)
 const onDebugToggled = (on) => { showDebug.value = !!on }
 
+// Fit check: the viewer reports whether the design fits the bed (and if a 90°
+// rotation would help). null = unknown/ok-and-cleared.
+const fit = ref(null)
+const onFitStatus = (s) => { fit.value = s }
+const rotate = (dir) => eventBus.emit('rotate-design', dir)
+
 // Dark mode (the viewer reacts via the 'theme-changed' event). The preference is
 // persisted across reloads in localStorage.
 const THEME_KEY = 'chronocut-theme'
@@ -72,6 +88,7 @@ onMounted(() => {
   eventBus.on('lines-updated', onLinesUpdated)
   eventBus.on('toolpath-stats', onStats)
   eventBus.on('debug-colors-changed', onDebugToggled)
+  eventBus.on('fit-status', onFitStatus)
   // Sync the viewer to the stored theme. This runs after the child ThreeViewer's
   // onMounted, so its 'theme-changed' listener is already registered.
   if (isDark.value) eventBus.emit('theme-changed', true)
@@ -80,6 +97,7 @@ onBeforeUnmount(() => {
   eventBus.off('lines-updated', onLinesUpdated)
   eventBus.off('toolpath-stats', onStats)
   eventBus.off('debug-colors-changed', onDebugToggled)
+  eventBus.off('fit-status', onFitStatus)
 })
 </script>
 
@@ -102,7 +120,7 @@ onBeforeUnmount(() => {
   --dropdown-bg: #ffffff;
   --dropdown-border: #cccccc;
   --hover-bg: rgba(0, 0, 0, 0.05);
-  --active-bg: #fff3e0;
+  --active-bg: rgba(0, 173, 198, 0.12);
 }
 
 .app-container.dark {
@@ -116,7 +134,7 @@ onBeforeUnmount(() => {
   --dropdown-bg: #2a2c30;
   --dropdown-border: #3a3d42;
   --hover-bg: rgba(255, 255, 255, 0.06);
-  --active-bg: #3a2f1e;
+  --active-bg: rgba(0, 173, 198, 0.22);
 }
 
 /* Sidebar Styles */
@@ -183,6 +201,41 @@ onBeforeUnmount(() => {
   transition: transform 0.15s ease, background 0.2s ease;
 }
 .theme-toggle:hover { transform: scale(1.08); }
+
+/* ── Fit / rotate banner ────────────────────────────────────────────────── */
+.fit-banner {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: calc(100% - 140px);
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  box-shadow: var(--panel-shadow);
+  font-size: 13px;
+  color: var(--text-strong);
+}
+.fit-banner.error { border-color: #DE041F; color: #DE041F; }
+.fit-msg { white-space: nowrap; }
+.fit-btn {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 6px;
+  background: #00ADC6;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+.fit-btn:hover { background: #0093A8; }
 
 /* ── Floating control dock ──────────────────────────────────────────────── */
 .floating-dock {

@@ -11,11 +11,11 @@
 // in viewer space (mm, origin top-left, y negative downward). The print head
 // starts at the top-left (0,0).
 
-// Default head speeds (mm/s). Placeholder values — wire these to the selected
-// cutter/material later. Relative magnitudes drive the time estimate and the
-// time-based playback reveal.
+// Default head speeds (mm/s). Used as a FALLBACK when no printer/material profile
+// is selected; otherwise buildToolpath receives resolved speeds via opts.speeds.
 export const SPEED_MM_S = {
-  engrave: 80,   // red / green layers
+  engrave: 80,   // red vector engrave
+  raster:  200,  // raster (green/grayscale) engrave
   cut:     30,   // blue layer
   other:   60,   // anything uncategorised
   travel: 250,   // rapid moves between paths (no beam)
@@ -30,6 +30,18 @@ const RASTER_GREEN    = '#00a000'  // colour of green-region scan lines
 const RASTER_GRAY     = '#555555'  // colour of grayscale-image scan lines
 
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y)
+
+// Time (s) to traverse a path of length L at target speed v (mm/s) with finite
+// acceleration a (mm/s²), assuming the head starts and ends at rest. With a<=0
+// this is just constant-speed L/v. On short paths the head never reaches v
+// (triangular profile); otherwise it's a trapezoid.
+export function rampedTime(L, v, a) {
+  if (!v || v <= 0 || L <= 0) return 0
+  if (!a || a <= 0) return L / v
+  const dAcc = (v * v) / (2 * a)          // distance to ramp 0→v
+  if (2 * dAcc <= L) return 2 * (v / a) + (L - 2 * dAcc) / v   // trapezoid
+  return 2 * Math.sqrt(L / a)             // triangle (peak < v)
+}
 
 export function categorize(hex) {
   const r = parseInt(hex.slice(1, 3), 16) / 255
@@ -296,6 +308,86 @@ export function computeDoubleRemoval(data) {
   }
 }
 
+// ── Remove white (watermark cleanup) ──────────────────────────────────────────
+// Drop near-white strokes (l/c) and fills (fp). White = nothing on a laser, so
+// these are almost always watermarks/artefacts.
+export function removeWhite(data, lumThreshold = 0.95) {
+  const lum = (hex) => {
+    const c = hex || '#000000'
+    return 0.299 * parseInt(c.slice(1, 3), 16) / 255
+         + 0.587 * parseInt(c.slice(3, 5), 16) / 255
+         + 0.114 * parseInt(c.slice(5, 7), 16) / 255
+  }
+  return data.filter((o) => {
+    if (o.type === 'l' || o.type === 'c') return lum(o.color) <= lumThreshold
+    if (o.type === 'fp') return lum(o.fill) <= lumThreshold
+    return true
+  })
+}
+
+// ── Rotate the whole design 90° ───────────────────────────────────────────────
+// dir: 'ccw' (rotate left) | 'cw' (rotate right). After rotating, the content is
+// re-anchored so its top-left corner sits back at (0,0) (x ≥ 0, y ≤ 0).
+function translateObj(o, dx, dy) {
+  if (o.type === 'l') return { ...o, x1: o.x1 + dx, y1: o.y1 + dy, x2: o.x2 + dx, y2: o.y2 + dy }
+  if (o.type === 'c') return { ...o, x1: o.x1 + dx, y1: o.y1 + dy, x2: o.x2 + dx, y2: o.y2 + dy,
+                                     x3: o.x3 + dx, y3: o.y3 + dy, x4: o.x4 + dx, y4: o.y4 + dy }
+  if (o.type === 'fp') return { ...o, path: o.path.map((cmd) => {
+    const n = { ...cmd }
+    if ('x'  in cmd) { n.x  = cmd.x  + dx; n.y  = cmd.y  + dy }
+    if ('x1' in cmd) { n.x1 = cmd.x1 + dx; n.y1 = cmd.y1 + dy }
+    if ('x2' in cmd) { n.x2 = cmd.x2 + dx; n.y2 = cmd.y2 + dy }
+    return n
+  }) }
+  if (o.type === 'img') return { ...o, x: o.x + dx, y: o.y + dy }
+  return { ...o }
+}
+
+export function rotateData(data, dir = 'cw') {
+  const R = dir === 'ccw' ? (x, y) => [-y, x]   // 90° counter-clockwise (left)
+                          : (x, y) => [y, -x]   // 90° clockwise (right)
+  let minX = Infinity, maxY = -Infinity
+  const grow = (x, y) => { if (x < minX) minX = x; if (y > maxY) maxY = y }
+
+  const tmp = data.map((o) => {
+    if (o.type === 'l') {
+      const a = R(o.x1, o.y1), b = R(o.x2, o.y2)
+      grow(a[0], a[1]); grow(b[0], b[1])
+      return { ...o, x1: a[0], y1: a[1], x2: b[0], y2: b[1] }
+    }
+    if (o.type === 'c') {
+      const a = R(o.x1, o.y1), b = R(o.x2, o.y2), c = R(o.x3, o.y3), d = R(o.x4, o.y4)
+      grow(a[0], a[1]); grow(b[0], b[1]); grow(c[0], c[1]); grow(d[0], d[1])
+      return { ...o, x1: a[0], y1: a[1], x2: b[0], y2: b[1], x3: c[0], y3: c[1], x4: d[0], y4: d[1] }
+    }
+    if (o.type === 'fp') {
+      const path = o.path.map((cmd) => {
+        const n = { ...cmd }
+        if ('x'  in cmd) { const p = R(cmd.x,  cmd.y);  n.x  = p[0]; n.y  = p[1]; grow(p[0], p[1]) }
+        if ('x1' in cmd) { const p = R(cmd.x1, cmd.y1); n.x1 = p[0]; n.y1 = p[1]; grow(p[0], p[1]) }
+        if ('x2' in cmd) { const p = R(cmd.x2, cmd.y2); n.x2 = p[0]; n.y2 = p[1]; grow(p[0], p[1]) }
+        return n
+      })
+      return { ...o, path }
+    }
+    if (o.type === 'img') {
+      const corners = [R(o.x, o.y), R(o.x + o.w, o.y), R(o.x, o.y - o.h), R(o.x + o.w, o.y - o.h)]
+      let cx0 = Infinity, cx1 = -Infinity, cy0 = Infinity, cy1 = -Infinity
+      for (const [x, y] of corners) { if (x < cx0) cx0 = x; if (x > cx1) cx1 = x; if (y < cy0) cy0 = y; if (y > cy1) cy1 = y }
+      grow(cx0, cy0); grow(cx1, cy1)
+      const step = dir === 'ccw' ? 90 : -90
+      const rot = (((o.rot || 0) + step) % 360 + 360) % 360
+      return { ...o, x: cx0, y: cy1, w: cx1 - cx0, h: cy1 - cy0, rot }   // top-left = (minX, maxY)
+    }
+    if (o.type === 'mbox') return { ...o, w: o.h, h: o.w }
+    return { ...o }
+  })
+
+  const dx = isFinite(minX) ? -minX : 0
+  const dy = isFinite(maxY) ? -maxY : 0
+  return (dx === 0 && dy === 0) ? tmp : tmp.map((o) => translateObj(o, dx, dy))
+}
+
 // ── Primitive helpers ─────────────────────────────────────────────────────────
 const primStart = (p) => (p.t === 'L' ? p.a : p.p0)
 const primEnd   = (p) => (p.t === 'L' ? p.b : p.p3)
@@ -448,14 +540,14 @@ function bboxOfImage(img) {
  * bounding box, with overscan margins on each side for accel/decel. Emitted as
  * one continuous engrave move (serpentine) preceded by a travel to its start.
  */
-function rasterRegion(bbox, color, lastPos) {
+function rasterRegion(bbox, color, lastPos, basePitch = RASTER_PITCH) {
   const x0 = bbox.minX - RASTER_OVERSCAN   // left turnaround (with overscan)
   const x1 = bbox.maxX + RASTER_OVERSCAN   // right turnaround
   const topY = bbox.maxY                   // y is negative downward → top = max
   const botY = bbox.minY
   const height = Math.max(0, topY - botY)
 
-  let pitch = RASTER_PITCH
+  let pitch = basePitch || RASTER_PITCH
   let nRows = Math.floor(height / pitch) + 1
   if (nRows > RASTER_MAX_ROWS) { nRows = RASTER_MAX_ROWS; pitch = height / (nRows - 1) }
 
@@ -507,7 +599,12 @@ function rasterRegion(bbox, color, lastPos) {
  *     { kind:'travel', color, a, b }                             (rapid move)
  *   stats: { cutLen, engraveLen, otherLen, travelLen, totalTime } (mm / seconds)
  */
-export function buildToolpath(data, { optimize = false } = {}) {
+export function buildToolpath(data, { optimize = false, speeds = SPEED_MM_S, rasterPitch = RASTER_PITCH, accel = 0 } = {}) {
+  // Resolve the head speed (mm/s) for a move, with raster getting its own speed.
+  const speedFor = (m) => {
+    const s = m.category === 'raster' ? (speeds.raster ?? speeds.engrave) : speeds[m.kind]
+    return s || speeds.other || SPEED_MM_S.other
+  }
   const allPaths = reconstructPaths(data)
   const greenPaths  = allPaths.filter(p => p.category === 'green')
   const vectorPaths = allPaths.filter(p => p.category !== 'green')
@@ -531,7 +628,7 @@ export function buildToolpath(data, { optimize = false } = {}) {
 
   // ── Engrave phase 1: raster regions (green + grayscale) ────────────────────
   for (const region of regions) {
-    const r = rasterRegion(region.bbox, region.color, lastPos)
+    const r = rasterRegion(region.bbox, region.color, lastPos, rasterPitch)
     for (const m of r.moves) moves.push(m)
     lastPos = r.end
   }
@@ -588,7 +685,7 @@ export function buildToolpath(data, { optimize = false } = {}) {
     else if (m.kind === 'cut')     stats.cutLen     += L
     else if (m.kind === 'engrave') stats.engraveLen += L
     else                           stats.otherLen   += L
-    stats.totalTime += L / (SPEED_MM_S[m.kind] || SPEED_MM_S.other)
+    stats.totalTime += rampedTime(L, speedFor(m), accel)
   }
   return { moves, stats }
 }
