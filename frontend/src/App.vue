@@ -33,6 +33,9 @@
         <!-- Language switcher (floating, beneath the dark-mode toggle) -->
         <LanguageSwitcher />
 
+        <!-- Floating view toggles (top-right): travel, rulers, raster, debug -->
+        <ViewToggles />
+
         <!-- Fit / rotate banner (top-centre) -->
         <div v-if="fit && !fit.ok" class="fit-banner" :class="{ error: !fit.canRotate }">
           <template v-if="fit.canRotate">
@@ -64,6 +67,7 @@ import Sidebar from './components/Sidebar.vue'
 import PlayBack from './components/PlayBack.vue'
 import DownloadComponent from './components/DownloadComponent.vue'
 import LanguageSwitcher from './components/LanguageSwitcher.vue'
+import ViewToggles from './components/ViewToggles.vue'
 import eventBus from './eventBus'
 import { t } from './translations'
 
@@ -201,8 +205,9 @@ onBeforeUnmount(() => {
   pointer-events: none;
   user-select: none;
 }
+/* The two debug read-outs are mutually exclusive, so they share the same spot. */
 .debug-overlay { top: 30px; }
-.speed-legend  { top: 64px; }
+.speed-legend  { top: 30px; }
 .speed-bar {
   width: 90px;
   height: 8px;

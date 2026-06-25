@@ -49,7 +49,7 @@ let cutterH = 700
 // Retained so we can rebuild the toolpath when a toggle changes without
 // re-fetching from the backend.
 let currentData = null
-let optimizePath = false
+let optimizePath = true     // default: optimise path order (printer-like shortest travel)
 let rasterBlock  = false   // draw raster regions as a filling block vs scan lines
 let debugColors  = false   // colour every segment randomly (to count them)
 let showTravel   = true    // draw the dotted "Leerwege" (travel) moves

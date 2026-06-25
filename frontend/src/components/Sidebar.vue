@@ -79,31 +79,12 @@
       </div>
     </div>
 
-    <!-- Toggles -->
+    <!-- Toggles (view + debug toggles live as floating buttons top-right; this
+         one affects the generated toolpath) -->
     <div class="button-group toggle-group">
-      <label class="opt-toggle" :title="t('tipRulers')">
-        <input type="checkbox" v-model="showRulers" @change="onRulersChange" />
-        <span class="opt-text">{{ t('showRulers') }}</span>
-      </label>
       <label class="opt-toggle" :title="t('tipOptimize')">
         <input type="checkbox" v-model="optimizePath" @change="onOptimizeChange" />
         <span class="opt-text">{{ t('optimizePath') }}</span>
-      </label>
-      <label class="opt-toggle" :title="t('tipRaster')">
-        <input type="checkbox" v-model="rasterBlock" @change="onRasterModeChange" />
-        <span class="opt-text">{{ t('rasterBlock') }}</span>
-      </label>
-      <label class="opt-toggle" :title="t('tipShowTravel')">
-        <input type="checkbox" v-model="showTravel" @change="onShowTravelChange" />
-        <span class="opt-text">{{ t('showTravel') }}</span>
-      </label>
-      <label class="opt-toggle" :title="t('tipDebug')">
-        <input type="checkbox" v-model="debugColors" @change="onDebugColorsChange" />
-        <span class="opt-text">{{ t('debug') }}</span>
-      </label>
-      <label class="opt-toggle" :title="t('tipSpeedGradient')">
-        <input type="checkbox" v-model="speedGradient" @change="onSpeedGradientChange" />
-        <span class="opt-text">{{ t('speedGradient') }}</span>
       </label>
     </div>
 
@@ -162,41 +143,15 @@ const filteredFamilies = computed(() => {
   return q ? materials.value.filter((f) => f.name.toLowerCase().includes(q)) : materials.value
 })
 
-// Path optimisation toggle (default off — printer cuts in file order)
-const optimizePath = ref(false)
+// Path optimisation toggle (default ON — mimic the printer's shortest-travel order).
+const optimizePath = ref(true)
 const onOptimizeChange = () => {
   eventBus.emit('optimize-changed', optimizePath.value)
 }
 
-// Draw raster engraving as a solid filling block instead of scan lines.
-const rasterBlock = ref(false)
-const onRasterModeChange = () => {
-  eventBus.emit('raster-mode-changed', rasterBlock.value)
-}
-
-// Debug: colour every segment randomly so they are easy to count.
-const debugColors = ref(false)
-const onDebugColorsChange = () => {
-  eventBus.emit('debug-colors-changed', debugColors.value)
-}
-
-// Show the CAD rulers along the top + left edges of the viewport.
-const showRulers = ref(true)
-const onRulersChange = () => {
-  eventBus.emit('rulers-changed', showRulers.value)
-}
-
-// Show/hide the dotted travel "Leerwege".
-const showTravel = ref(true)
-const onShowTravelChange = () => {
-  eventBus.emit('show-travel-changed', showTravel.value)
-}
-
-// Debug: colour segments by speed (for debugging acceleration).
-const speedGradient = ref(false)
-const onSpeedGradientChange = () => {
-  eventBus.emit('speed-gradient-changed', speedGradient.value)
-}
+// NB: the view + debug toggles (travel, rulers, raster-as-block, debug colours,
+// speed gradient) now live in the floating ViewToggles component (top-right);
+// they emit the same events.
 
 // ── Cutter / Material / Thickness selection ───────────────────────────────────
 // Resolve + broadcast the head speeds for the current printer + thickness preset.

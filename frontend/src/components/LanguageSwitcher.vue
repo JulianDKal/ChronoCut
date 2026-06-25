@@ -38,7 +38,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   position: absolute;
   top: 66px;            /* directly beneath the dark-mode toggle (top:16 + 42 + 8) */
   right: 16px;
-  z-index: 20;
+  z-index: 30;          /* above the view toggles so the open dropdown covers them */
 }
 
 .lang-btn {
