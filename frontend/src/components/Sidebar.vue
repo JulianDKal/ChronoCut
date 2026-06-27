@@ -121,7 +121,7 @@ import eventBus from '../eventBus'
 import { loadProfiles, speedsFor } from '../profiles'
 import { t } from '../translations'
 
-const API_URL = import.meta.env.API_URL;
+const API_URL = import.meta.env.VITE_API_URL;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 const isLoading = ref(false)
