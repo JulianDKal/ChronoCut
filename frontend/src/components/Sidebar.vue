@@ -42,15 +42,17 @@
             @click.stop
           />
           <div v-if="filteredFamilies.length === 0" class="dropdown-empty">{{ t('noMatch') }}</div>
-          <div
-            v-for="f in filteredFamilies"
-            :key="f.name"
-            class="dropdown-item"
-            :class="{ active: selectedFamily?.name === f.name }"
-            @click="selectFamily(f)"
-          >
-            <span class="item-name">{{ f.name }}</span>
-            <span class="item-detail">{{ f.thicknesses.length }} {{ f.thicknesses.length === 1 ? t('option') : t('options') }}</span>
+          <div class="dropdown-list">
+            <div
+              v-for="f in filteredFamilies"
+              :key="f.name"
+              class="dropdown-item"
+              :class="{ active: selectedFamily?.name === f.name }"
+              @click="selectFamily(f)"
+            >
+              <span class="item-name">{{ f.name }}</span>
+              <span class="item-detail">{{ f.thicknesses.length }} {{ f.thicknesses.length === 1 ? t('option') : t('options') }}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -425,7 +427,14 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   box-shadow: 0 4px 12px rgba(0,0,0,0.12);
   z-index: 100;
-  overflow: hidden;
+  overflow: hidden auto;        /* scroll long lists (e.g. cutter/thickness) */
+  max-height: 340px;
+}
+
+/* The (searchable) material list scrolls; the search field above stays put. */
+.dropdown-list {
+  max-height: 260px;
+  overflow-y: auto;
 }
 
 .dropdown-item {
