@@ -5,6 +5,8 @@
 // If the request fails or files are malformed we fall back to the built-in
 // defaults so the app always works.
 
+const API_URL = import.meta.env.VITE_API_URL;
+
 const DEFAULT_PROFILES = {
   printers: [
     {
@@ -81,7 +83,7 @@ function parsePrinter(root) {
 // so adding a printer = dropping a file in that folder — no index needed.
 export async function loadProfiles() {
   try {
-    const res = await fetch('/api/printers')
+    const res = await fetch(`${API_URL}/api/printers`)
     if (!res.ok) throw new Error(`/api/printers → ${res.status}`)
     const { printers: xmls } = await res.json()
     const printers = []

@@ -30,6 +30,8 @@ import * as THREE from 'three'
 import eventBus from '../eventBus'
 import { buildToolpath, isGreen, SPEED_MM_S, fixColors, computeDoubleRemoval, rotateData, removeWhite, rampSegments, annotateRuns, movePolyline } from '../toolpath'
 
+const API_URL = import.meta.env.VITE_API_URL;
+
 const container = ref(null)
 const canvas    = ref(null)
 const rulerCanvas = ref(null)
@@ -989,7 +991,7 @@ async function handleDownloadRequest() {
   try {
     // Send the CURRENT (edited) drawing so Fix Colors / Remove Doubles are
     // reflected, and the backend can rebuild a faithful PDF of the whole design.
-    const response = await fetch('/api/save_pdf', {
+    const response = await fetch(`${API_URL}/api/save_pdf`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(currentData),

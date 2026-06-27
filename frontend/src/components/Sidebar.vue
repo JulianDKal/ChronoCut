@@ -225,7 +225,7 @@ const uploadFile = async (file) => {
     const formData = new FormData()
     formData.append('file', file)
 
-    const response = await fetch('/api/pdf_extraction', { method: 'POST', body: formData })
+    const response = await fetch(`${API_URL}/api/pdf_extraction`, { method: 'POST', body: formData })
     if (!response.ok) throw new Error('Upload failed')
 
     const result = await response.json()
@@ -277,14 +277,13 @@ const handleRemoveWhite = () => eventBus.emit('remove-white')
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 onMounted(async () => {
-  console.log("API URL: ", API_URL);
-  const response = await fetch(`${API_URL}`)
-  if (!response.ok) {
-      throw new Error(`Response status: ${response.status}`);
-    }
-  const result = await response.json();
+  // const response = await fetch(`${API_URL}`)
+  // if (!response.ok) {
+  //     throw new Error(`Response status: ${response.status}`);
+  //   }
+  // const result = await response.json();
   
-  console.log("API response: ", result.message);
+  // console.log("API response: ", result.message);
 
   document.addEventListener('click', handleDocClick)
   eventBus.on('doubles-result', onDoublesResult)
