@@ -30,3 +30,5 @@ backend/api/__pycache__
 /Reference
 *.DAT
 *.pyc
+.vercel
+.env*
