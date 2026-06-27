@@ -121,6 +121,8 @@ import eventBus from '../eventBus'
 import { loadProfiles, speedsFor } from '../profiles'
 import { t } from '../translations'
 
+const API_URL = import.meta.env.API_URL;
+
 // ── State ─────────────────────────────────────────────────────────────────────
 const isLoading = ref(false)
 const cutterOpen = ref(false)
@@ -275,6 +277,8 @@ const handleRemoveWhite = () => eventBus.emit('remove-white')
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 onMounted(async () => {
+  console.log("API URL: ", API_URL);
+
   document.addEventListener('click', handleDocClick)
   eventBus.on('doubles-result', onDoublesResult)
   const { printers } = await loadProfiles()
