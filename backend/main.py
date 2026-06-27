@@ -22,7 +22,7 @@ app = FastAPI(
 # Configure CORS for local development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:8000", "https://https://www.chronoslicer.com/", "https://https://chronoslicerfrontend.vercel.app/"],
+    allow_origins=["http://localhost:5173", "http://localhost:8000", "https://www.chronoslicer.com/", "https://chronoslicerfrontend.vercel.app/"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
