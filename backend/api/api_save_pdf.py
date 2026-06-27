@@ -52,8 +52,19 @@ async def create_pdf_from_json(objects: List[Dict[str, Any]] = Body(...)):
     except Exception as e:
         print(f"[save_pdf] build failed: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to build PDF: {e}")
+    
+    response = FileResponse(
+        path="your_file.pdf",
+        media_type="application/pdf",
+        filename="laser_drawing.pdf"
+    )
+    
+    # Explicitly add CORS headers
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
 
-    return FileResponse(output_path, filename="laser_drawing.pdf", media_type="application/pdf")
+    return response
 
 
 # ── PDF builder ───────────────────────────────────────────────────────────────
