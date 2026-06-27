@@ -28,3 +28,4 @@ backend/venv/*
 backend/__pycache__
 backend/api/__pycache__
 /Reference
+*.DAT

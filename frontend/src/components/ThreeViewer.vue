@@ -57,6 +57,9 @@ let speedGradient = false  // debug: colour segments by speed (accel debugging)
 let lineMaterial = null    // toolpath line material (for live travel show/hide)
 let showRulers   = true    // CAD-style rulers along the top + left edges (mm)
 let lastRulerSig = ''      // redraw the rulers only when the view actually changes
+let tinyBoxes = []         // bounding boxes of parts small enough to fall through the grid
+let showTinyHighlight = false  // highlight those parts in the viewer (on demand)
+let tinyHighlightGroup = null
 
 // Head speeds + raster pitch from the selected printer/material (profiles.js).
 // Default to the placeholders until a material is chosen.
@@ -346,6 +349,7 @@ const checkFit = () => {
 const handleLinesUpdate = (lines) => {
   currentData = lines
   clearHighlight()
+  showTinyHighlight = false                      // fresh design → drop the at-risk overlay
   drawObjects(lines, { resetPlayback: true })   // new design → timeline back to 0
   // Centre + fit the view on the freshly loaded design.
   contentBox = computeContentBBox(lines)
@@ -459,6 +463,39 @@ const clearHighlight = () => {
   scene.remove(highlightGroup)
   highlightGroup.traverse(o => { o.geometry?.dispose(); o.material?.dispose() })
   highlightGroup = null
+}
+
+// ── Tiny-part highlight (may fall through the grid) ───────────────────────────
+// Orange boxes drawn a little larger than each at-risk part so even mm-sized ones
+// are easy to spot. Toggled on demand from the download warning, not by default.
+const TINY_HL_COLOR = 0xff8c00
+const drawTinyHighlight = () => {
+  clearTinyHighlight()
+  if (!showTinyHighlight || !tinyBoxes.length) return
+  const PAD = 2.5
+  const verts = []
+  for (const b of tinyBoxes) {
+    const x0 = b.minX - PAD, x1 = b.maxX + PAD, y0 = b.minY - PAD, y1 = b.maxY + PAD
+    verts.push(x0, y0, 0, x1, y0, 0,  x1, y0, 0, x1, y1, 0,
+               x1, y1, 0, x0, y1, 0,  x0, y1, 0, x0, y0, 0)   // 4 edges
+  }
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3))
+  const line = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: TINY_HL_COLOR }))
+  line.position.z = 0.22   // above the toolpath + content
+  tinyHighlightGroup = new THREE.Group()
+  tinyHighlightGroup.add(line)
+  scene.add(tinyHighlightGroup)
+}
+const clearTinyHighlight = () => {
+  if (!tinyHighlightGroup) return
+  scene.remove(tinyHighlightGroup)
+  tinyHighlightGroup.traverse(o => { o.geometry?.dispose(); o.material?.dispose() })
+  tinyHighlightGroup = null
+}
+const handleTinyHighlight = (on) => {
+  showTinyHighlight = !!on
+  drawTinyHighlight()
 }
 
 // ── Playback progress ─────────────────────────────────────────────────────────
@@ -677,7 +714,8 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
   })
 
   // ── Toolpath: ordered machine moves (engrave → cut, optional optimise) ────
-  const { moves, stats } = buildToolpath(data, { optimize: optimizePath, speeds: currentSpeeds, rasterPitch: currentRasterPitch, accel: currentAccel })
+  const { moves, stats, tinyBoxes: tb } = buildToolpath(data, { optimize: optimizePath, speeds: currentSpeeds, rasterPitch: currentRasterPitch, accel: currentAccel })
+  tinyBoxes = tb || []
 
   // Expand moves into one ordered segment stream. The GEOMETRY stays minimal —
   // a straight line is a single segment — and the velocity profile is evaluated
@@ -927,6 +965,7 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
   }
 
   scene.add(drawingGroup)
+  drawTinyHighlight()   // re-draw the at-risk-part overlay if it's active
 
   // Restore the previous playback position (or start from 0 on a fresh load).
   pbTime = playback ? playback.total * prevFrac : 0
@@ -1108,6 +1147,7 @@ onMounted(() => {
   eventBus.on('show-travel-changed', handleShowTravelChanged)
   eventBus.on('speed-gradient-changed', handleSpeedGradientChanged)
   eventBus.on('rulers-changed',     handleRulersChanged)
+  eventBus.on('tiny-highlight-changed', handleTinyHighlight)
   eventBus.on('fix-colors',         handleFixColors)
   eventBus.on('doubles-detect',     handleDoublesDetect)
   eventBus.on('doubles-remove',     handleDoublesRemove)
@@ -1131,6 +1171,7 @@ onBeforeUnmount(() => {
   eventBus.off('show-travel-changed', handleShowTravelChanged)
   eventBus.off('speed-gradient-changed', handleSpeedGradientChanged)
   eventBus.off('rulers-changed',     handleRulersChanged)
+  eventBus.off('tiny-highlight-changed', handleTinyHighlight)
   eventBus.off('fix-colors',         handleFixColors)
   eventBus.off('doubles-detect',     handleDoublesDetect)
   eventBus.off('doubles-remove',     handleDoublesRemove)

@@ -3,6 +3,7 @@
     <!-- Estimated job time + expand toggle -->
     <div class="timer-section">
       <div class="time-display">{{ formattedTime }}</div>
+      <span v-if="showWarning || showTinyWarning" class="warn-badge" :title="warnTitle">⚠</span>
       <button
         class="expand-btn"
         :class="{ open: expanded }"
@@ -37,6 +38,16 @@
           </tr>
         </tfoot>
       </table>
+      <p v-if="showWarning" class="warn-note">{{ warningText }}</p>
+      <button
+        v-if="showTinyWarning"
+        class="warn-note tiny"
+        :class="{ active: tinyHighlight }"
+        @click="toggleTinyHighlight"
+      >
+        <span>{{ tinyText }}</span>
+        <span class="warn-action">{{ tinyHighlight ? t('hideParts') : t('showParts') }}</span>
+      </button>
     </div>
 
     <!-- Download Button -->
@@ -69,6 +80,34 @@ const fmtDist = (mm) => (mm >= 1000 ? `${(mm / 1000).toFixed(2)} m` : `${Math.ro
 
 const formattedTime = computed(() => fmtTime(stats.value?.totalTime))
 
+// Handling-time warning: many cut-out parts cost real time the machine estimate
+// ignores — each must be removed by hand. Driven by the COUNT, not the size.
+const SMALL_PARTS_WARN = 10        // warn from this many parts on
+const SECONDS_PER_SMALL_PART = 5   // ~ removal time per part
+
+const smallParts = computed(() => stats.value?.smallParts || 0)
+const showWarning = computed(() => smallParts.value >= SMALL_PARTS_WARN)
+const warningText = computed(() =>
+  t('smallPartsNote', { n: smallParts.value, time: fmtTime(smallParts.value * SECONDS_PER_SMALL_PART) }))
+
+// Grid-fall warning: very small parts can drop through the bed grid; clicking the
+// note highlights them in the viewer (off by default — only when the user checks).
+const TINY_PARTS_WARN = 1          // warn once there is at least this many
+const tinyParts = computed(() => stats.value?.tinyParts || 0)
+const showTinyWarning = computed(() => tinyParts.value >= TINY_PARTS_WARN)
+const tinyText = computed(() => t('tinyPartsNote', { n: tinyParts.value }))
+
+const tinyHighlight = ref(false)
+const toggleTinyHighlight = () => {
+  tinyHighlight.value = !tinyHighlight.value
+  eventBus.emit('tiny-highlight-changed', tinyHighlight.value)
+}
+
+// Combined tooltip for the ⚠ badge (both warnings, if active).
+const warnTitle = computed(() =>
+  [showWarning.value ? warningText.value : null, showTinyWarning.value ? tinyText.value : null]
+    .filter(Boolean).join('\n'))
+
 // One row per operation type that has any length. Colours mirror the viewer.
 const rows = computed(() => {
   const s = stats.value
@@ -97,9 +136,17 @@ const handleDownload = () => {
 }
 
 const onStats = (s) => { stats.value = s || null }
+// A fresh design drops any active highlight (the viewer resets its overlay too).
+const onLinesUpdated = () => { tinyHighlight.value = false }
 
-onMounted(() => eventBus.on('toolpath-stats', onStats))
-onBeforeUnmount(() => eventBus.off('toolpath-stats', onStats))
+onMounted(() => {
+  eventBus.on('toolpath-stats', onStats)
+  eventBus.on('lines-updated', onLinesUpdated)
+})
+onBeforeUnmount(() => {
+  eventBus.off('toolpath-stats', onStats)
+  eventBus.off('lines-updated', onLinesUpdated)
+})
 </script>
 
 <style scoped>
@@ -150,6 +197,46 @@ onBeforeUnmount(() => eventBus.off('toolpath-stats', onStats))
 .expand-btn:hover:not(:disabled) { background: var(--hover-bg); }
 .expand-btn.open { transform: rotate(180deg); }
 .expand-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Small-parts handling warning */
+.warn-badge {
+  font-size: 18px;
+  line-height: 1;
+  color: #e0a800;
+  cursor: default;
+}
+.warn-note {
+  margin: 8px 0 0;
+  padding: 7px 9px;
+  border-radius: 7px;
+  background: rgba(224, 168, 0, 0.12);
+  border: 1px solid rgba(224, 168, 0, 0.45);
+  color: var(--text-strong);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+/* The grid-fall note is a button: click to highlight the parts in the viewer. */
+.warn-note.tiny {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+.warn-note.tiny:hover { background: rgba(224, 168, 0, 0.2); }
+.warn-note.tiny.active {
+  background: rgba(255, 140, 0, 0.18);
+  border-color: #ff8c00;
+}
+.warn-action {
+  align-self: flex-start;
+  font-weight: 600;
+  color: #d99500;
+  text-decoration: underline;
+}
+.warn-note.tiny.active .warn-action { color: #ff8c00; }
 
 /* Breakdown table */
 .breakdown {

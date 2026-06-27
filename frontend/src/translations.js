@@ -91,6 +91,10 @@ const messages = {
     opTravel: 'Leerwege',
     opOther: 'Sonstiges',
     total: 'Gesamt',
+    smallPartsNote: '⚠ {n} Teile: Entnehmen & Aussortieren kostet zusätzlich ~{time}.',
+    tinyPartsNote: '⚠ {n} winzige Teile (< 1,5 × 0,8 cm) können durchs Gitter fallen — Bergen kostet Zeit.',
+    showParts: 'im Viewer anzeigen',
+    hideParts: 'ausblenden',
   },
   en: {
     // Sidebar
@@ -156,6 +160,10 @@ const messages = {
     opTravel: 'Travel',
     opOther: 'Other',
     total: 'Total',
+    smallPartsNote: '⚠ {n} parts: removing & sorting adds ~{time}.',
+    tinyPartsNote: '⚠ {n} tiny parts (< 1.5 × 0.8 cm) may fall through the grid — retrieving them takes time.',
+    showParts: 'show in viewer',
+    hideParts: 'hide',
   },
 }
 

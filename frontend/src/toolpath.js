@@ -29,6 +29,17 @@ const RASTER_MAX_ROWS = 1200  // safety cap (pitch grows if a region is huge)
 const RASTER_GREEN    = '#00a000'  // colour of green-region scan lines
 const RASTER_GRAY     = '#555555'  // colour of grayscale-image scan lines
 
+// Hand-removal heuristic: every closed cut contour is a part that must be picked
+// out by hand, so what drives the extra handling time is the COUNT, not the size.
+// The size filter is kept (tunable) but set effectively "off" so all parts count.
+const SMALL_PART_MM = 1e6
+
+// Grid-fall heuristic: a part this small (≈ 1.5 × 0.8 cm or less) can drop through
+// the cutter's honeycomb/slat grid; retrieving it costs time. These get the
+// separate "may fall through" warning and the optional viewer highlight.
+const TINY_PART_W = 15   // mm — larger side
+const TINY_PART_H = 8    // mm — shorter side
+
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y)
 
 // Time (s) to traverse a path of length L at target speed v (mm/s) with finite
@@ -834,6 +845,25 @@ export function buildToolpath(data, { optimize = false, speeds = SPEED_MM_S, ras
   const stats = {
     cutLen: 0, cutTime: 0, engraveLen: 0, engraveTime: 0, rasterLen: 0, rasterTime: 0,
     otherLen: 0, otherTime: 0, travelLen: 0, travelTime: 0, totalTime: 0,
+    smallParts: 0, tinyParts: 0,
+  }
+
+  // Cut-out parts (closed blue contours). Easy to forget when judging a job: each
+  // must be removed by hand (→ smallParts, drives handling time), and very small
+  // ones can drop through the bed grid and need retrieving (→ tinyParts, with
+  // their boxes returned so the viewer can highlight them on demand).
+  const tinyBoxes = []
+  for (const p of vectorPaths) {
+    if (p.category !== 'blue') continue
+    if (Math.hypot(p.start.x - p.end.x, p.start.y - p.end.y) > 0.5) continue   // open → not a part
+    const box = bboxOfPaths([p])
+    if (!box) continue
+    const w = box.maxX - box.minX, h = box.maxY - box.minY
+    if (Math.max(w, h) <= SMALL_PART_MM) stats.smallParts++
+    if (Math.max(w, h) <= TINY_PART_W && Math.min(w, h) <= TINY_PART_H) {
+      stats.tinyParts++
+      tinyBoxes.push(box)
+    }
   }
   for (const m of moves) {
     let L = 0
@@ -850,5 +880,5 @@ export function buildToolpath(data, { optimize = false, speeds = SPEED_MM_S, ras
     else                              { stats.otherLen   += L; stats.otherTime   += T }
     stats.totalTime += T
   }
-  return { moves, stats }
+  return { moves, stats, tinyBoxes }
 }
