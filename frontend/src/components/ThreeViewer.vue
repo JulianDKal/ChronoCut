@@ -30,7 +30,7 @@ import * as THREE from 'three'
 import eventBus from '../eventBus'
 import { buildToolpath, isGreen, SPEED_MM_S, fixColors, computeDoubleRemoval, rotateData, removeWhite, rampSegments, annotateRuns, movePolyline } from '../toolpath'
 
-const API_URL = import.meta.env.VITE_API_URL;
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 const container = ref(null)
 const canvas    = ref(null)

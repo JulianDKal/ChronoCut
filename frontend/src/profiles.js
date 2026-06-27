@@ -5,7 +5,7 @@
 // If the request fails or files are malformed we fall back to the built-in
 // defaults so the app always works.
 
-const API_URL = import.meta.env.VITE_API_URL;
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 const DEFAULT_PROFILES = {
   printers: [

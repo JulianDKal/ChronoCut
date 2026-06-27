@@ -1,7 +1,9 @@
 import base64
 import pymupdf
+import io
+from io import BytesIO
 from fastapi import APIRouter, Body, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from typing import List, Dict, Any
 from pathlib import Path
 
@@ -43,33 +45,27 @@ async def create_pdf_from_json(objects: List[Dict[str, Any]] = Body(...)):
     if not objects:
         raise HTTPException(status_code=400, detail="No drawing objects provided")
 
-    out_dir = Path("uploads")
-    out_dir.mkdir(exist_ok=True)
-    output_path = out_dir / "laser_drawing.pdf"
-
     try:
-        build_pdf(objects, output_path)
+        # Get the PDF as an in-memory buffer
+        pdf_buffer: BytesIO = build_pdf(objects)
+
+        # Return it as a streaming response
+        return StreamingResponse(
+            pdf_buffer,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": 'attachment; filename="laser_drawing.pdf"',
+                "Access-Control-Allow-Origin": "*",
+            }
+        )
     except Exception as e:
         print(f"[save_pdf] build failed: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to build PDF: {e}")
-    
-    response = FileResponse(
-        path="your_file.pdf",
-        media_type="application/pdf",
-        filename="laser_drawing.pdf"
-    )
-    
-    # Explicitly add CORS headers
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-
-    return response
 
 
 # ── PDF builder ───────────────────────────────────────────────────────────────
 
-def build_pdf(objects: List[Dict[str, Any]], output_path: Path) -> Path:
+def build_pdf(objects: List[Dict[str, Any]]) -> io.BytesIO:
     # Page size from the mbox entry (mm → pt); fall back to A4 if absent.
     page_w_pt, page_h_pt = 595.0, 842.0
     for o in objects:
@@ -95,10 +91,11 @@ def build_pdf(objects: List[Dict[str, Any]], output_path: Path) -> Path:
             _draw_stroke(shape, o)
     shape.commit()
 
-    doc.save(output_path)
+    pdf_buffer = io.BytesIO()
+    doc.save(pdf_buffer)
     doc.close()
-    return output_path
-
+    pdf_buffer.seek(0)
+    return pdf_buffer
 
 def _draw_stroke(shape, o: Dict[str, Any]):
     color = hex_to_rgb(o.get("color", "#000000"))
