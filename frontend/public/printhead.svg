@@ -1,22 +1,78 @@
-<?xml version="1.0" encoding="UTF-8"?>
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <!-- Laser print-head marker. Replace this file (or drop a printhead.png next to
      it) to customise the icon shown at the cutter's current position. The image
      is centred on the head position, so keep the artwork centred. -->
-<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-  <g fill="none" stroke="#00ADC6" stroke-width="3.5" stroke-linecap="round">
-    <!-- white halo underneath for contrast on any background -->
-    <g stroke="#ffffff" stroke-width="6" opacity="0.65">
-      <circle cx="32" cy="32" r="17"/>
-      <line x1="32" y1="3"  x2="32" y2="20"/>
-      <line x1="32" y1="44" x2="32" y2="61"/>
-      <line x1="3"  y1="32" x2="20" y2="32"/>
-      <line x1="44" y1="32" x2="61" y2="32"/>
-    </g>
-    <circle cx="32" cy="32" r="17"/>
-    <line x1="32" y1="3"  x2="32" y2="20"/>
-    <line x1="32" y1="44" x2="32" y2="61"/>
-    <line x1="3"  y1="32" x2="20" y2="32"/>
-    <line x1="44" y1="32" x2="61" y2="32"/>
-  </g>
-  <circle cx="32" cy="32" r="3.4" fill="#00ADC6"/>
+
+<svg
+   width="64"
+   height="64"
+   viewBox="0 0 64 64"
+   version="1.1"
+   id="svg28"
+   sodipodi:docname="printhead.svg"
+   inkscape:version="1.1.1 (3bf5ae0d25, 2021-09-20)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs32" />
+  <sodipodi:namedview
+     id="namedview30"
+     pagecolor="#505050"
+     bordercolor="#eeeeee"
+     borderopacity="1"
+     inkscape:pageshadow="0"
+     inkscape:pageopacity="0"
+     inkscape:pagecheckerboard="0"
+     showgrid="false"
+     inkscape:zoom="3.0859375"
+     inkscape:cx="-71.129114"
+     inkscape:cy="35.159494"
+     inkscape:window-width="1920"
+     inkscape:window-height="991"
+     inkscape:window-x="-9"
+     inkscape:window-y="-9"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg28" />
+  <circle
+     cx="32"
+     cy="32"
+     r="17"
+     id="circle14"
+     style="fill:none;stroke:#00adc6;stroke-width:5.5;stroke-linecap:round;stroke-miterlimit:4;stroke-dasharray:none" />
+  <line
+     x1="32"
+     y1="6.4038076"
+     x2="32"
+     y2="21.408472"
+     id="line16"
+     style="fill:none;stroke:#00adc6;stroke-width:5.5;stroke-linecap:round;stroke-miterlimit:4;stroke-dasharray:none" />
+  <line
+     x1="32"
+     y1="42.59153"
+     x2="32"
+     y2="57.596191"
+     id="line18"
+     style="fill:none;stroke:#00adc6;stroke-width:5.5;stroke-linecap:round;stroke-miterlimit:4;stroke-dasharray:none" />
+  <line
+     x1="6.4038076"
+     y1="32"
+     x2="21.408472"
+     y2="32"
+     id="line20"
+     style="fill:none;stroke:#00adc6;stroke-width:5.5;stroke-linecap:round;stroke-miterlimit:4;stroke-dasharray:none" />
+  <line
+     x1="42.59153"
+     y1="32"
+     x2="57.596191"
+     y2="32"
+     id="line22"
+     style="fill:none;stroke:#00adc6;stroke-width:5.5;stroke-linecap:round;stroke-miterlimit:4;stroke-dasharray:none" />
+  <circle
+     cx="32"
+     cy="32"
+     r="3.4"
+     fill="#00ADC6"
+     id="circle26" />
 </svg>
