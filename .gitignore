@@ -32,3 +32,4 @@ backend/api/__pycache__
 *.pyc
 .vercel
 .env*
+/docs

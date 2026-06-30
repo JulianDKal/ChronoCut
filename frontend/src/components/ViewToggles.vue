@@ -13,14 +13,41 @@
       <span class="vt-tip">{{ t(tg.label) }}</span>
     </button>
 
-    <!-- Combined debug control: one button, both debug modes in a flyout -->
-    <div class="vt-debug">
+    <!-- Raster control: filled block vs outline-only block (flyout) -->
+    <div class="vt-popover">
+      <button
+        class="vt-btn"
+        :class="{ active: rasterActive }"
+        aria-haspopup="true"
+        :aria-expanded="rasterOpen"
+        @click="toggleMenu('raster')"
+      >
+        <span class="vt-icon" v-html="ICON_RASTER"></span>
+        <span class="vt-tip" v-show="!rasterOpen">{{ t('rasterBlock') }}</span>
+      </button>
+
+      <div v-if="rasterOpen" class="vt-menu">
+        <button
+          v-for="r in rasterOptions"
+          :key="r.key"
+          class="vt-item"
+          :class="{ active: state.rasterMode === r.key }"
+          @click="setRaster(r.key)"
+        >
+          <span class="vt-radio"></span>
+          <span>{{ t(r.label) }}</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Debug control: segment colours vs speed gradient (flyout) -->
+    <div class="vt-popover">
       <button
         class="vt-btn"
         :class="{ active: debugActive }"
         aria-haspopup="true"
         :aria-expanded="debugOpen"
-        @click="debugOpen = !debugOpen"
+        @click="toggleMenu('debug')"
       >
         <span class="vt-icon" v-html="ICON_DEBUG"></span>
         <span class="vt-tip" v-show="!debugOpen">{{ t('debug') }}</span>
@@ -53,14 +80,16 @@ import { t } from '../translations'
 const state = reactive({
   showTravel: true,
   showRulers: true,
-  rasterBlock: false,
+  rasterMode: 'lines',   // 'lines' | 'block' | 'outline'
   debugColors: false,
   speedGradient: false,
 })
 
 const debugOpen = ref(false)
+const rasterOpen = ref(false)
 const root = ref(null)
-const debugActive = computed(() => state.debugColors || state.speedGradient)
+const debugActive  = computed(() => state.debugColors || state.speedGradient)
+const rasterActive = computed(() => state.rasterMode !== 'lines')
 
 const icon = (paths) =>
   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
@@ -72,11 +101,14 @@ const ICON_RASTER = icon('<rect x="4" y="4" width="16" height="16" rx="2"/><path
 const ICON_DEBUG  = icon('<rect x="8" y="9" width="8" height="10" rx="4"/><path d="M12 9 V19"/><path d="M9 5 l1.5 3 M15 5 l-1.5 3"/><path d="M8 12 H5 M8 16 H6 M16 12 H19 M16 16 H18"/>')
 
 const simpleToggles = [
-  { key: 'showTravel',  label: 'showTravel',  event: 'show-travel-changed', icon: ICON_TRAVEL },
-  { key: 'showRulers',  label: 'showRulers',  event: 'rulers-changed',      icon: ICON_RULER },
-  { key: 'rasterBlock', label: 'rasterBlock', event: 'raster-mode-changed', icon: ICON_RASTER },
+  { key: 'showTravel', label: 'showTravel', event: 'show-travel-changed', icon: ICON_TRAVEL },
+  { key: 'showRulers', label: 'showRulers', event: 'rulers-changed',      icon: ICON_RULER },
 ]
 
+const rasterOptions = [
+  { key: 'block',   label: 'rasterFilled'  },
+  { key: 'outline', label: 'rasterOutline' },
+]
 const debugOptions = [
   { key: 'debugColors',   label: 'dbgSegments', event: 'debug-colors-changed' },
   { key: 'speedGradient', label: 'dbgSpeed',    event: 'speed-gradient-changed' },
@@ -84,14 +116,28 @@ const debugOptions = [
 
 const emit = (key, event) => eventBus.emit(event, state[key])
 
+// Only one flyout open at a time.
+const toggleMenu = (which) => {
+  if (which === 'raster') { rasterOpen.value = !rasterOpen.value; debugOpen.value = false }
+  else                    { debugOpen.value = !debugOpen.value; rasterOpen.value = false }
+}
+
 const toggle = (tg) => {
   state[tg.key] = !state[tg.key]
-  debugOpen.value = false        // tidy: close the debug flyout when toggling others
+  debugOpen.value = false
+  rasterOpen.value = false
   emit(tg.key, tg.event)
 }
+
+// Raster: "filled" and "outline" are mutually exclusive; clicking the active one
+// turns it off (→ back to normal scan lines).
+const setRaster = (mode) => {
+  state.rasterMode = state.rasterMode === mode ? 'lines' : mode
+  eventBus.emit('raster-mode-changed', state.rasterMode)
+}
+
 // Debug modes are mutually exclusive: turning one on turns the other off (and a
-// second click on the active one turns it back off → neither active). Switch the
-// other off first so the state is never both-on, even momentarily.
+// second click on the active one turns it back off → neither active).
 const toggleKey = (key, event) => {
   const turningOn = !state[key]
   if (turningOn) {
@@ -106,8 +152,10 @@ const toggleKey = (key, event) => {
   emit(key, event)
 }
 
-// Close the debug flyout on an outside click.
-const onDocClick = (e) => { if (root.value && !root.value.contains(e.target)) debugOpen.value = false }
+// Close both flyouts on an outside click.
+const onDocClick = (e) => {
+  if (root.value && !root.value.contains(e.target)) { debugOpen.value = false; rasterOpen.value = false }
+}
 onMounted(() => document.addEventListener('click', onDocClick))
 onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 </script>
@@ -129,7 +177,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   height: 42px;
   border-radius: 50%;
   border: 1px solid var(--panel-border);
-  background: var(--panel-bg);
+  background: var(--card-bg);
   color: var(--text-strong);
   box-shadow: var(--panel-shadow);
   cursor: pointer;
@@ -158,7 +206,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   white-space: nowrap;
   padding: 5px 9px;
   border-radius: 6px;
-  background: var(--panel-bg);
+  background: var(--card-bg);
   color: var(--text-strong);
   border: 1px solid var(--panel-border);
   box-shadow: var(--panel-shadow);
@@ -170,7 +218,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 .vt-btn:hover .vt-tip { opacity: 1; }
 
 /* Debug flyout */
-.vt-debug { position: relative; }
+.vt-popover { position: relative; }
 .vt-menu {
   position: absolute;
   right: calc(100% + 10px);

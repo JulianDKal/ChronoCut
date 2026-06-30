@@ -28,6 +28,7 @@ const RASTER_OVERSCAN = 50    // mm of accel/decel space added on each side (5 c
 const RASTER_MAX_ROWS = 1200  // safety cap (pitch grows if a region is huge)
 const RASTER_GREEN    = '#00a000'  // colour of green-region scan lines
 const RASTER_GRAY     = '#555555'  // colour of grayscale-image scan lines
+const RASTER_SPLIT_GAP = 20   // mm — green raster groups farther apart than this get their own box
 
 // Hand-removal heuristic: every closed cut contour is a part that must be picked
 // out by hand, so what drives the extra handling time is the COUNT, not the size.
@@ -208,6 +209,8 @@ export function annotateRuns(points, v, a) {
   return out
 }
 
+const GRAY_TOL = 0.12   // max channel spread for a colour to count as grayscale
+
 export function categorize(hex) {
   const r = parseInt(hex.slice(1, 3), 16) / 255
   const g = parseInt(hex.slice(3, 5), 16) / 255
@@ -215,17 +218,21 @@ export function categorize(hex) {
   if (b > 0.8 && r < 0.2) return 'blue'
   if (r > 0.8 && b < 0.2) return 'red'
   if (g > 0.5 && r < 0.4) return 'green'
+  // grayscale (black / white / any gray) is raster-engraved, like a bitmap.
+  if (Math.max(r, g, b) - Math.min(r, g, b) < GRAY_TOL) return 'gray'
   return 'other'
 }
 
-// True for fill colours engraved as a raster (currently green text/fills).
+// Colours engraved as a raster (green fills + any grayscale content).
 export const isGreen = (hex) => categorize(hex || '#000000') === 'green'
+export const isGray  = (hex) => categorize(hex || '#000000') === 'gray'
+export const isRasterColor = (hex) => { const c = categorize(hex || '#000000'); return c === 'green' || c === 'gray' }
 
 // Map a colour category to a machine operation (drives speed + travel grouping).
 export function kindOf(category) {
   if (category === 'blue')  return 'cut'
   if (category === 'other') return 'other'
-  return 'engrave' // red, green
+  return 'engrave' // red, green, gray
 }
 
 // ── Edits (Fix Colors / Remove Doubles) ───────────────────────────────────────
@@ -245,13 +252,16 @@ const PURE_GREEN = '#00ff00'
  * Everything else is left untouched. Returns a new array (shallow-copied items).
  */
 export function fixColors(data) {
+  // Only clone (i.e. "change") an object when the colour ACTUALLY differs from the
+  // pure target — so re-running is idempotent and the changed-count is truthful
+  // (a file that is already pure red/blue/green reports 0 fixed).
   return data.map((obj) => {
     if (obj.type === 'l' || obj.type === 'c') {
       const cat = categorize(obj.color || '#000000')
-      if (cat === 'red')  return { ...obj, color: PURE_RED }
-      if (cat === 'blue') return { ...obj, color: PURE_BLUE }
+      if (cat === 'red')  return obj.color === PURE_RED  ? obj : { ...obj, color: PURE_RED }
+      if (cat === 'blue') return obj.color === PURE_BLUE ? obj : { ...obj, color: PURE_BLUE }
     } else if (obj.type === 'fp') {
-      if (isGreen(obj.fill)) return { ...obj, fill: PURE_GREEN }
+      if (isGreen(obj.fill)) return obj.fill === PURE_GREEN ? obj : { ...obj, fill: PURE_GREEN }
     }
     return obj
   })
@@ -476,18 +486,75 @@ export function computeDoubleRemoval(data) {
 // ── Remove white (watermark cleanup) ──────────────────────────────────────────
 // Drop near-white strokes (l/c) and fills (fp). White = nothing on a laser, so
 // these are almost always watermarks/artefacts.
-export function removeWhite(data, lumThreshold = 0.95) {
-  const lum = (hex) => {
-    const c = hex || '#000000'
-    return 0.299 * parseInt(c.slice(1, 3), 16) / 255
-         + 0.587 * parseInt(c.slice(3, 5), 16) / 255
-         + 0.114 * parseInt(c.slice(5, 7), 16) / 255
-  }
+const WHITE_LUM = 0.95   // luminance above which a colour counts as "(near-)white"
+
+function hexLum(hex) {
+  const c = hex || '#000000'
+  return 0.299 * parseInt(c.slice(1, 3), 16) / 255
+       + 0.587 * parseInt(c.slice(3, 5), 16) / 255
+       + 0.114 * parseInt(c.slice(5, 7), 16) / 255
+}
+
+export function removeWhite(data, lumThreshold = WHITE_LUM) {
   return data.filter((o) => {
-    if (o.type === 'l' || o.type === 'c') return lum(o.color) <= lumThreshold
-    if (o.type === 'fp') return lum(o.fill) <= lumThreshold
+    if (o.type === 'l' || o.type === 'c') return hexLum(o.color) <= lumThreshold
+    if (o.type === 'fp') return hexLum(o.fill) <= lumThreshold
     return true
   })
+}
+
+// ── Detect helpers (preview highlight for Fix Colors / Remove White) ──────────
+// Return { count, segs } where segs are line segments [{x1,y1,x2,y2}] of the
+// elements that WOULD change — mirroring computeDoubleRemoval's `removed`, so the
+// viewer can highlight them before the edit is applied.
+function strokeSegs(o) {
+  if (o.type === 'l') return [{ x1: o.x1, y1: o.y1, x2: o.x2, y2: o.y2 }]
+  const pts = flattenPrim({ t: 'C', p0: { x: o.x1, y: o.y1 }, p1: { x: o.x2, y: o.y2 },
+                            p2: { x: o.x3, y: o.y3 }, p3: { x: o.x4, y: o.y4 } })
+  const segs = []
+  for (let i = 0; i < pts.length - 1; i++) segs.push({ x1: pts[i].x, y1: pts[i].y, x2: pts[i + 1].x, y2: pts[i + 1].y })
+  return segs
+}
+
+function fpSegs(path) {
+  const segs = []
+  let cx = 0, cy = 0, sx = 0, sy = 0
+  for (const c of path) {
+    if (c.cmd === 'M') { cx = c.x; cy = c.y; sx = cx; sy = cy }
+    else if (c.cmd === 'L') { segs.push({ x1: cx, y1: cy, x2: c.x, y2: c.y }); cx = c.x; cy = c.y }
+    else if (c.cmd === 'C') {
+      const pts = flattenPrim({ t: 'C', p0: { x: cx, y: cy }, p1: { x: c.x1, y: c.y1 },
+                                p2: { x: c.x2, y: c.y2 }, p3: { x: c.x, y: c.y } })
+      for (let i = 0; i < pts.length - 1; i++) segs.push({ x1: pts[i].x, y1: pts[i].y, x2: pts[i + 1].x, y2: pts[i + 1].y })
+      cx = c.x; cy = c.y
+    } else if (c.cmd === 'Z') { segs.push({ x1: cx, y1: cy, x2: sx, y2: sy }); cx = sx; cy = sy }
+  }
+  return segs
+}
+
+export function detectFixColors(data) {
+  let count = 0
+  const segs = []
+  for (const o of data) {
+    if (o.type === 'l' || o.type === 'c') {
+      const cat = categorize(o.color || '#000000')
+      const target = cat === 'red' ? PURE_RED : cat === 'blue' ? PURE_BLUE : null
+      if (target && o.color !== target) { count++; segs.push(...strokeSegs(o)) }
+    } else if (o.type === 'fp' && isGreen(o.fill) && o.fill !== PURE_GREEN) {
+      count++; segs.push(...fpSegs(o.path))
+    }
+  }
+  return { count, segs }
+}
+
+export function detectRemoveWhite(data, lumThreshold = WHITE_LUM) {
+  let count = 0
+  const segs = []
+  for (const o of data) {
+    if ((o.type === 'l' || o.type === 'c') && hexLum(o.color) > lumThreshold) { count++; segs.push(...strokeSegs(o)) }
+    else if (o.type === 'fp' && hexLum(o.fill) > lumThreshold) { count++; segs.push(...fpSegs(o.path)) }
+  }
+  return { count, segs }
 }
 
 // ── Rotate the whole design 90° ───────────────────────────────────────────────
@@ -694,6 +761,36 @@ function bboxOfFpPath(path, box = null) {
   return box
 }
 
+// Single-linkage cluster a list of bounding boxes: boxes whose nearest gap is
+// <= `gap` end up in the same cluster; clusters farther apart than `gap` stay
+// separate. Returns one merged bbox per cluster. Chains count (A near B, B near C
+// → one cluster) so contiguous content stays together but a real empty band splits.
+function clusterBoxes(boxes, gap) {
+  const n = boxes.length
+  if (n <= 1) return boxes.slice()
+  const parent = Array.from({ length: n }, (_, i) => i)
+  const find = (i) => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i] } return i }
+  const near = (a, b) => {
+    const gx = Math.max(b.minX - a.maxX, a.minX - b.maxX, 0)
+    const gy = Math.max(b.minY - a.maxY, a.minY - b.maxY, 0)
+    return Math.hypot(gx, gy) <= gap
+  }
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      if (find(i) !== find(j) && near(boxes[i], boxes[j])) parent[find(i)] = find(j)
+    }
+  }
+  const merged = new Map()
+  for (let i = 0; i < n; i++) {
+    const r = find(i), b = boxes[i], m = merged.get(r)
+    if (m) {
+      m.minX = Math.min(m.minX, b.minX); m.minY = Math.min(m.minY, b.minY)
+      m.maxX = Math.max(m.maxX, b.maxX); m.maxY = Math.max(m.maxY, b.maxY)
+    } else merged.set(r, { ...b })
+  }
+  return [...merged.values()]
+}
+
 // Bounding box of a raster image entry (top-left corner at x,y; extends right
 // and downward, where down is negative y).
 function bboxOfImage(img) {
@@ -771,22 +868,22 @@ export function buildToolpath(data, { optimize = false, speeds = SPEED_MM_S, ras
     return s || speeds.other || SPEED_MM_S.other
   }
   const allPaths = reconstructPaths(data)
-  const greenPaths  = allPaths.filter(p => p.category === 'green')
-  const vectorPaths = allPaths.filter(p => p.category !== 'green')
+  const rasterPaths = allPaths.filter(p => p.category === 'green' || p.category === 'gray')
+  const vectorPaths = allPaths.filter(p => p.category !== 'green' && p.category !== 'gray')
 
-  // Raster regions: one box around all green content (vectors + filled text),
-  // one per grayscale image.
+  // Raster regions: ALL raster content — green + grayscale vectors/fills AND
+  // grayscale bitmaps — is collected as PER-ELEMENT boxes and clustered by
+  // proximity. So nearby content shares one raster box (bitmaps are NOT rastered
+  // one-by-one) and groups farther apart than RASTER_SPLIT_GAP get their own box.
   const regions = []
-  let greenBox = bboxOfPaths(greenPaths)
+  const rasterBoxes = []
+  const pushBox = (b, color) => { if (b && isFinite(b.minX)) rasterBoxes.push({ ...b, color }) }
+  for (const p of rasterPaths) pushBox(bboxOfPaths([p]), p.category === 'green' ? RASTER_GREEN : RASTER_GRAY)
   for (const obj of data) {
-    if (obj.type === 'fp' && isGreen(obj.fill)) greenBox = bboxOfFpPath(obj.path, greenBox)
+    if (obj.type === 'fp' && isRasterColor(obj.fill)) pushBox(bboxOfFpPath(obj.path), isGreen(obj.fill) ? RASTER_GREEN : RASTER_GRAY)
+    else if (obj.type === 'img' && obj.colorspace === 1) pushBox(bboxOfImage(obj), RASTER_GRAY)
   }
-  if (greenBox && isFinite(greenBox.minX)) regions.push({ bbox: greenBox, color: RASTER_GREEN })
-  for (const obj of data) {
-    if (obj.type === 'img' && obj.colorspace === 1) {
-      regions.push({ bbox: bboxOfImage(obj), color: RASTER_GRAY })
-    }
-  }
+  for (const c of clusterBoxes(rasterBoxes, RASTER_SPLIT_GAP)) regions.push({ bbox: c, color: c.color })
 
   const moves = []
   let lastPos = { x: 0, y: 0 } // print head starts at the top-left corner

@@ -1,0 +1,38 @@
+/* Shared theme tokens (light + dark).
+   Applied via the `.cc-theme` class so BOTH the desktop layout and the mobile
+   layout — and every child that reads these vars (sidebar, dropdowns, language
+   switcher, floating islands …) — share a single source of truth. Toggling the
+   `dark` class on the same element flips the whole tree. */
+.cc-theme {
+  --panel-bg: #edf0f4;          /* sidebar — soft gray chrome (distinct from the white bed) */
+  --card-bg: var(--panel-bg);   /* floating chrome (islands, top-right buttons, banner) = sidebar */
+  --panel-border: rgba(0, 0, 0, 0.07);
+  --panel-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+  --text-strong: #2c3e50;
+  --text-muted: #7f8c8d;
+  --track-bg: #dde1e7;
+  --ctrl-bg: #ffffff;           /* controls — white, pop on the gray sidebar */
+  --ctrl-hover: #eef1f5;
+  --ctrl-border: #d4dae1;
+  --dropdown-bg: #ffffff;       /* menus float as white cards above the sidebar */
+  --dropdown-border: #d4dae1;
+  --hover-bg: rgba(0, 0, 0, 0.05);
+  --active-bg: rgba(0, 173, 198, 0.16);
+}
+
+.cc-theme.dark {
+  --panel-bg: #212327;          /* sidebar — chrome, darker than the bed */
+  --card-bg: var(--panel-bg);
+  --panel-border: rgba(255, 255, 255, 0.07);
+  --panel-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+  --text-strong: #e8eaed;
+  --text-muted: #9aa0a6;
+  --track-bg: #3a3d42;
+  --ctrl-bg: #33363b;           /* controls — lighter than the panel */
+  --ctrl-hover: #3c4046;
+  --ctrl-border: #45494f;
+  --dropdown-bg: #33363b;
+  --dropdown-border: #45494f;
+  --hover-bg: rgba(255, 255, 255, 0.06);
+  --active-bg: rgba(0, 173, 198, 0.24);
+}

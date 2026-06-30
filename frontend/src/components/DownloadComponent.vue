@@ -179,15 +179,15 @@ onBeforeUnmount(() => {
 
 /* Expand / collapse arrow */
 .expand-btn {
-  width: 26px;
-  height: 26px;
+  width: 32px;
+  height: 32px;
   flex-shrink: 0;
-  border: 1px solid var(--ctrl-border);
-  border-radius: 6px;
+  border: none;
+  border-radius: 8px;
   background: transparent;
   color: var(--text-strong);
   cursor: pointer;
-  font-size: 13px;
+  font-size: 20px;
   line-height: 1;
   display: flex;
   align-items: center;

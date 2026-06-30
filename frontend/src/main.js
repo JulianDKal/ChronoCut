@@ -1,5 +1,6 @@
 import { createApp } from 'vue'
 import App from './App.vue'
+import './theme.css'
 
 // Add this to remove default margins
 const style = document.createElement('style')

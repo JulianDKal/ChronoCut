@@ -1,5 +1,10 @@
 <template>
-  <div class="app-container" :class="{ dark: isDark }">
+  <!-- .cc-theme carries the shared light/dark tokens for BOTH layouts. -->
+  <div class="cc-theme" :class="{ dark: isDark }">
+    <!-- Mobile: a plain, single-column version (no 3D viewer) -->
+    <MobileApp v-if="isMobile" :is-dark="isDark" @toggle-theme="toggleTheme" />
+
+    <div v-else class="app-container">
     <!-- Sidebar - Left -->
     <aside class="sidebar">
       <Sidebar />
@@ -22,13 +27,7 @@
         </div>
 
         <!-- Dark-mode toggle (floating, top-right) -->
-        <button
-          class="theme-toggle"
-          @click="toggleTheme"
-          :title="isDark ? t('toLight') : t('toDark')"
-        >
-          {{ isDark ? '☀' : '☾' }}
-        </button>
+        <ThemeToggle :is-dark="isDark" @toggle="toggleTheme" />
 
         <!-- Language switcher (floating, beneath the dark-mode toggle) -->
         <LanguageSwitcher />
@@ -57,6 +56,7 @@
         </div>
       </div>
     </div>
+    </div>
   </div>
 </template>
 
@@ -64,12 +64,21 @@
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import ThreeViewer from './components/ThreeViewer.vue'
 import Sidebar from './components/Sidebar.vue'
+import MobileApp from './components/MobileApp.vue'
 import PlayBack from './components/PlayBack.vue'
 import DownloadComponent from './components/DownloadComponent.vue'
 import LanguageSwitcher from './components/LanguageSwitcher.vue'
+import ThemeToggle from './components/ThemeToggle.vue'
 import ViewToggles from './components/ViewToggles.vue'
 import eventBus from './eventBus'
 import { t } from './translations'
+
+// Mobile vs. desktop layout. On a narrow viewport we render the plain MobileApp
+// instead of the full 3D-viewer layout. Kept reactive so rotating a phone or
+// resizing a window switches between the two.
+const mobileMq = window.matchMedia('(max-width: 768px)')
+const isMobile = ref(mobileMq.matches)
+const onMqChange = (e) => { isMobile.value = e.matches }
 
 // Controls are greyed out / disabled until a file has been uploaded.
 const hasContent = ref(false)
@@ -105,6 +114,7 @@ const toggleTheme = () => {
 }
 
 onMounted(() => {
+  mobileMq.addEventListener('change', onMqChange)
   eventBus.on('lines-updated', onLinesUpdated)
   eventBus.on('toolpath-stats', onStats)
   eventBus.on('debug-colors-changed', onDebugToggled)
@@ -115,6 +125,7 @@ onMounted(() => {
   if (isDark.value) eventBus.emit('theme-changed', true)
 })
 onBeforeUnmount(() => {
+  mobileMq.removeEventListener('change', onMqChange)
   eventBus.off('lines-updated', onLinesUpdated)
   eventBus.off('toolpath-stats', onStats)
   eventBus.off('debug-colors-changed', onDebugToggled)
@@ -124,39 +135,15 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* Theme tokens now live in src/theme.css on the shared .cc-theme wrapper. */
+.cc-theme { height: 100%; }
+
 .app-container {
   display: flex;
   width: 100vw;
   height: 100vh;
   overflow: hidden;
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-
-  /* Theme tokens (consumed by the sidebar, floating islands + child components) */
-  --panel-bg: #ffffff;
-  --panel-border: rgba(0, 0, 0, 0.06);
-  --panel-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
-  --text-strong: #2c3e50;
-  --text-muted: #7f8c8d;
-  --track-bg: #ecf0f1;
-  --ctrl-border: #353535;
-  --dropdown-bg: #ffffff;
-  --dropdown-border: #cccccc;
-  --hover-bg: rgba(0, 0, 0, 0.05);
-  --active-bg: rgba(0, 173, 198, 0.12);
-}
-
-.app-container.dark {
-  --panel-bg: #2a2c30;
-  --panel-border: rgba(255, 255, 255, 0.08);
-  --panel-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
-  --text-strong: #e8eaed;
-  --text-muted: #9aa0a6;
-  --track-bg: #3a3d42;
-  --ctrl-border: #4a4d52;
-  --dropdown-bg: #2a2c30;
-  --dropdown-border: #3a3d42;
-  --hover-bg: rgba(255, 255, 255, 0.06);
-  --active-bg: rgba(0, 173, 198, 0.22);
 }
 
 /* Sidebar Styles */
@@ -217,29 +204,6 @@ onBeforeUnmount(() => {
     hsl(60, 100%, 50%), hsl(0, 100%, 50%));
 }
 
-/* ── Dark-mode toggle ───────────────────────────────────────────────────── */
-.theme-toggle {
-  position: absolute;
-  top: 16px;
-  right: 16px;
-  width: 42px;
-  height: 42px;
-  border-radius: 50%;
-  border: 1px solid var(--panel-border);
-  background: var(--panel-bg);
-  color: var(--text-strong);
-  box-shadow: var(--panel-shadow);
-  cursor: pointer;
-  font-size: 18px;
-  line-height: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 20;
-  transition: transform 0.15s ease, background 0.2s ease;
-}
-.theme-toggle:hover { transform: scale(1.08); }
-
 /* ── Fit / rotate banner ────────────────────────────────────────────────── */
 .fit-banner {
   position: absolute;
@@ -253,7 +217,7 @@ onBeforeUnmount(() => {
   max-width: calc(100% - 140px);
   padding: 10px 16px;
   border-radius: 10px;
-  background: var(--panel-bg);
+  background: var(--card-bg);
   border: 1px solid var(--panel-border);
   box-shadow: var(--panel-shadow);
   font-size: 13px;
@@ -292,7 +256,7 @@ onBeforeUnmount(() => {
 
 .island {
   pointer-events: auto;
-  background: var(--panel-bg);
+  background: var(--card-bg);
   border-radius: 14px;
   border: 1px solid var(--panel-border);
   box-shadow: var(--panel-shadow);
@@ -302,12 +266,13 @@ onBeforeUnmount(() => {
 .island--timeline { flex: 1 1 auto; min-width: 0; }
 .island--download { flex: 0 0 auto; }
 
-/* Greyed out (but NOT transparent) until something is uploaded */
-.floating-dock.is-disabled {
-  filter: grayscale(1) brightness(0.97);
-}
+/* Until something is uploaded: keep the card backgrounds correct, just disable
+   interaction and fade the controls inside (so the timeline doesn't look tinted). */
 .floating-dock.is-disabled .island {
   pointer-events: none;
+}
+.floating-dock.is-disabled .island > * {
+  opacity: 0.45;
 }
 
 /* Responsive */

@@ -1,84 +1,44 @@
 <template>
-  <div class="sidebar-container" @click.stop>
+  <div class="sidebar-container">
     <!-- Top Button Group -->
     <div class="button-group top-buttons">
       <button class="upload-btn" @click="handleUpload" :disabled="isLoading">
         <span class="upload-btn-text">{{ isLoading ? t('uploading') : t('upload') }}</span>
       </button>
 
-      <!-- Cutter Dropdown -->
-      <div class="dropdown-wrapper" ref="cutterRef">
-        <button class="dropdown-toggle" @click="toggleDropdown('cutter')">
-          <span class="btn-text">{{ selectedCutter ? selectedCutter.name : t('selectCutter') }}</span>
-          <span class="arrow" :class="{ rotated: cutterOpen }">▾</span>
-        </button>
-        <div class="dropdown-menu" v-show="cutterOpen">
-          <div
-            v-for="c in cutters"
-            :key="c.id"
-            class="dropdown-item"
-            :class="{ active: selectedCutter?.id === c.id }"
-            @click="selectCutter(c)"
-          >
-            <span class="item-name">{{ c.name }}</span>
-            <span class="item-detail">{{ c.powerW }}W · {{ c.bedWidth }}×{{ c.bedHeight }}mm</span>
-          </div>
-        </div>
-      </div>
+      <!-- Cutter / Material / Thickness — shared styled dropdown component -->
+      <ProfileDropdown
+        :model-value="selectedCutter"
+        @update:model-value="selectCutter"
+        :items="cutters"
+        :placeholder="t('selectCutter')"
+        label-key="name"
+        item-key="id"
+        :detail="(c) => `${c.powerW}W · ${c.bedWidth}×${c.bedHeight}mm`"
+      />
 
-      <!-- Material (searchable) -->
-      <div class="dropdown-wrapper" ref="materialRef">
-        <button class="dropdown-toggle" @click="toggleDropdown('material')">
-          <span class="btn-text">{{ selectedFamily ? selectedFamily.name : t('selectMaterial') }}</span>
-          <span class="arrow" :class="{ rotated: materialOpen }">▾</span>
-        </button>
-        <div class="dropdown-menu" v-show="materialOpen">
-          <input
-            ref="materialSearchRef"
-            v-model="materialSearch"
-            class="dropdown-search"
-            type="text"
-            :placeholder="t('searchMaterial')"
-            @click.stop
-          />
-          <div v-if="filteredFamilies.length === 0" class="dropdown-empty">{{ t('noMatch') }}</div>
-          <div class="dropdown-list">
-            <div
-              v-for="f in filteredFamilies"
-              :key="f.name"
-              class="dropdown-item"
-              :class="{ active: selectedFamily?.name === f.name }"
-              @click="selectFamily(f)"
-            >
-              <span class="item-name">{{ f.name }}</span>
-              <span class="item-detail">{{ f.thicknesses.length }} {{ f.thicknesses.length === 1 ? t('option') : t('options') }}</span>
-            </div>
-          </div>
-        </div>
-      </div>
+      <ProfileDropdown
+        :model-value="selectedFamily"
+        @update:model-value="selectFamily"
+        :items="materials"
+        :placeholder="t('selectMaterial')"
+        label-key="name"
+        item-key="name"
+        :detail="(f) => `${f.thicknesses.length} ${f.thicknesses.length === 1 ? t('option') : t('options')}`"
+        searchable
+        :search-placeholder="t('searchMaterial')"
+        :empty-text="t('noMatch')"
+      />
 
-      <!-- Thickness (depends on the chosen material) -->
-      <div class="dropdown-wrapper" ref="thicknessRef">
-        <button
-          class="dropdown-toggle"
-          :disabled="!selectedFamily"
-          @click="selectedFamily && toggleDropdown('thickness')"
-        >
-          <span class="btn-text">{{ selectedThickness ? selectedThickness.label : (selectedFamily ? t('selectThickness') : '—') }}</span>
-          <span class="arrow" :class="{ rotated: thicknessOpen }">▾</span>
-        </button>
-        <div class="dropdown-menu" v-show="thicknessOpen">
-          <div
-            v-for="t in (selectedFamily?.thicknesses || [])"
-            :key="t.id"
-            class="dropdown-item"
-            :class="{ active: selectedThickness?.id === t.id }"
-            @click="selectThickness(t)"
-          >
-            <span class="item-name">{{ t.label }}</span>
-          </div>
-        </div>
-      </div>
+      <ProfileDropdown
+        :model-value="selectedThickness"
+        @update:model-value="selectThickness"
+        :items="selectedFamily?.thicknesses || []"
+        :placeholder="selectedFamily ? t('selectThickness') : '—'"
+        label-key="label"
+        item-key="id"
+        :disabled="!selectedFamily"
+      />
     </div>
 
     <!-- Toggles (view + debug toggles live as floating buttons top-right; this
@@ -92,60 +52,43 @@
 
     <div class="spacer"></div>
 
-    <!-- Bottom Button Group -->
-    <div class="button-group bottom-buttons">
+    <!-- Bottom Button Group: two-step edits (detect → confirm) with feedback -->
+    <div class="button-group bottom-buttons" ref="bottomButtonsRef">
       <button
+        v-for="a in EDIT_ACTIONS"
+        :key="a"
         class="sidebar-btn"
-        :class="{ armed: doublesArmed }"
-        @click="handleRemoveDoubles"
-        :disabled="isLoading"
-        :title="t('tipRemoveDoubles')"
+        :class="{ armed: editState[a].armed }"
+        :disabled="isLoading || editState[a].busy"
+        :title="t(EDIT_TIP[a])"
+        @click="onEditClick(a)"
       >
-        <span class="btn-text">{{ removeDoublesLabel }}</span>
-      </button>
-      <button class="sidebar-btn" @click="handleFixColors" :disabled="isLoading"
-        :title="t('tipFixColors')">
-        <span class="btn-text">{{ t('fixColors') }}</span>
-      </button>
-      <button class="sidebar-btn" @click="handleRemoveWhite" :disabled="isLoading"
-        :title="t('tipRemoveWhite')">
-        <span class="btn-text">{{ t('removeWhite') }}</span>
+        <span v-if="editState[a].busy" class="btn-spinner"></span>
+        <span class="btn-text">{{ editLabel(a) }}</span>
       </button>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
 import eventBus from '../eventBus'
 import { loadProfiles, speedsFor } from '../profiles'
 import { t } from '../translations'
+import ProfileDropdown from './ProfileDropdown.vue'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 // ── State ─────────────────────────────────────────────────────────────────────
 const isLoading = ref(false)
-const cutterOpen = ref(false)
-const materialOpen = ref(false)
-const thicknessOpen = ref(false)
-const cutterRef = ref(null)
-const materialRef = ref(null)
-const thicknessRef = ref(null)
-const materialSearchRef = ref(null)
 
 // Printers + materials are loaded from /public XML at startup (profiles.js).
 const cutters   = ref([])
 const materials = ref([])      // material families of the currently selected cutter
-const materialSearch = ref('')
 
 const selectedCutter    = ref(null)
 const selectedFamily    = ref(null)   // chosen material family
 const selectedThickness = ref(null)   // chosen thickness preset (carries the speeds)
-
-const filteredFamilies = computed(() => {
-  const q = materialSearch.value.trim().toLowerCase()
-  return q ? materials.value.filter((f) => f.name.toLowerCase().includes(q)) : materials.value
-})
 
 // Path optimisation toggle (default ON — mimic the printer's shortest-travel order).
 const optimizePath = ref(true)
@@ -166,7 +109,6 @@ const emitSpeeds = () => {
 
 const selectCutter = (cutter) => {
   selectedCutter.value = cutter
-  cutterOpen.value = false
   materials.value = cutter.materials || []
   selectedFamily.value = null
   selectedThickness.value = null
@@ -176,35 +118,23 @@ const selectCutter = (cutter) => {
   if (materials.value.length) selectFamily(materials.value[0])
 }
 
-// Open the requested dropdown and close the others (so they never overlap).
-const toggleDropdown = (which) => {
-  cutterOpen.value    = which === 'cutter'    ? !cutterOpen.value    : false
-  materialOpen.value  = which === 'material'  ? !materialOpen.value  : false
-  thicknessOpen.value = which === 'thickness' ? !thicknessOpen.value : false
-  if (materialOpen.value) nextTick(() => materialSearchRef.value?.focus())
-}
-
 const selectFamily = (fam) => {
   selectedFamily.value = fam
-  materialOpen.value = false
-  materialSearch.value = ''
   selectedThickness.value = null
   // Auto-pick the first thickness so speeds are valid immediately; the user can
   // change it via the thickness dropdown.
   if (fam.thicknesses.length) selectThickness(fam.thicknesses[0])
 }
 
-const selectThickness = (t) => {
-  selectedThickness.value = t
-  thicknessOpen.value = false
+const selectThickness = (th) => {
+  selectedThickness.value = th
   emitSpeeds()
 }
 
-// Close dropdowns when clicking outside
+// Cancel any armed edit when clicking outside the edit buttons. (The dropdowns
+// close themselves; this only guards the two-step edit actions.)
 const handleDocClick = (e) => {
-  if (cutterRef.value && !cutterRef.value.contains(e.target))       cutterOpen.value = false
-  if (materialRef.value && !materialRef.value.contains(e.target))   materialOpen.value = false
-  if (thicknessRef.value && !thicknessRef.value.contains(e.target)) thicknessOpen.value = false
+  if (anyArmed() && bottomButtonsRef.value && !bottomButtonsRef.value.contains(e.target)) cancelArmed()
 }
 
 // ── Upload ────────────────────────────────────────────────────────────────────
@@ -230,7 +160,7 @@ const uploadFile = async (file) => {
 
     const result = await response.json()
     eventBus.emit('lines-updated', result.lines)
-    resetDoubles()   // a fresh design clears any armed double-removal state
+    resetEdits()   // a fresh design clears any armed/flashing edit state
   } catch (error) {
     console.error('Upload error:', error)
     alert(t('uploadError') + error.message)
@@ -239,41 +169,78 @@ const uploadFile = async (file) => {
   }
 }
 
-// ── Remove Doubles (two-click: highlight → confirm) ───────────────────────────
-// First click detects + highlights coincident red/blue cut lines (ThreeViewer
-// reports the count back); the button then arms, and a second click removes them.
-const doublesArmed = ref(false)
-const doublesCount = ref(0)
-const doublesHint  = ref('')   // brief "Keine Dopplungen" note
+// ── Edits (Fix Colors / Remove White / Remove Doubles) ────────────────────────
+// All three share ONE two-step flow: 1st click DETECTS (the viewer highlights
+// what would change and reports the count → the button arms, e.g. "Entferne 2
+// Dopplungen"); 2nd click APPLIES it (then a brief success text). Clicking
+// elsewhere cancels an armed action; a spinner shows while the viewer works.
+const bottomButtonsRef = ref(null)
 
-const removeDoublesLabel = computed(() => {
-  if (doublesArmed.value) {
-    const n = doublesCount.value
-    return `${t('removeN')} ${n} ${n === 1 ? t('double') : t('doubles')}`
-  }
-  return doublesHint.value || t('removeDoubles')
+const EDIT_ACTIONS = ['doubles', 'colors', 'white']
+const EDIT_TIP = { doubles: 'tipRemoveDoubles', colors: 'tipFixColors', white: 'tipRemoveWhite' }
+const EDIT_CFG = {
+  doubles: { idle: 'removeDoubles', armed: 'doublesArmedN', none: 'noDoubles',  done: 'doublesDone' },
+  colors:  { idle: 'fixColors',     armed: 'colorsArmedN',  none: 'colorsNone', done: 'colorsDone' },
+  white:   { idle: 'removeWhite',   armed: 'whiteArmedN',   none: 'whiteNone',  done: 'whiteDone' },
+}
+const editState = reactive({
+  doubles: { armed: false, busy: false, count: 0, flash: '' },
+  colors:  { armed: false, busy: false, count: 0, flash: '' },
+  white:   { armed: false, busy: false, count: 0, flash: '' },
 })
 
-const handleRemoveDoubles = () => {
-  eventBus.emit(doublesArmed.value ? 'doubles-remove' : 'doubles-detect')
+const editLabel = (a) => {
+  const s = editState[a], cfg = EDIT_CFG[a]
+  if (s.flash) return s.flash
+  if (s.armed) return t(cfg.armed, { n: s.count })
+  return t(cfg.idle)
 }
 
-const onDoublesResult = ({ count, fromDetect }) => {
-  doublesCount.value = count
-  doublesArmed.value = count > 0
-  // Only nudge "none found" when the user actually ran a detection — not when the
-  // state was reset by Fix Colors or after a removal.
-  if (count === 0 && fromDetect) {
-    doublesHint.value = t('noDoubles')
-    setTimeout(() => { doublesHint.value = '' }, 1500)
+const anyArmed = () => EDIT_ACTIONS.some((a) => editState[a].armed)
+
+// Disarm every action (optionally keeping one) + drop the preview highlight.
+const cancelArmed = (keep = null) => {
+  let cleared = false
+  for (const a of EDIT_ACTIONS) {
+    if (a === keep) continue
+    if (editState[a].armed) { editState[a].armed = false; editState[a].count = 0; cleared = true }
+  }
+  if (cleared) eventBus.emit('edit-cancel')
+}
+
+const flashEdit = (a, text) => {
+  editState[a].flash = text
+  setTimeout(() => { editState[a].flash = '' }, 1500)
+}
+
+const onEditClick = (a) => {
+  const s = editState[a]
+  if (s.busy) return
+  if (s.armed) {
+    s.busy = true
+    setTimeout(() => eventBus.emit('edit-apply', { action: a }), 0)   // defer so the spinner paints first
+  } else {
+    cancelArmed(a)                        // only one action armed at a time
+    s.busy = true
+    setTimeout(() => eventBus.emit('edit-detect', { action: a }), 0)
   }
 }
 
-const resetDoubles = () => { doublesArmed.value = false; doublesCount.value = 0; doublesHint.value = '' }
+const onEditResult = ({ action, count, phase }) => {
+  const s = editState[action], cfg = EDIT_CFG[action]
+  s.busy = false
+  if (phase === 'detect') {
+    if (count > 0) { s.armed = true; s.count = count }
+    else { s.armed = false; flashEdit(action, t(cfg.none)) }
+  } else {                                // applied
+    s.armed = false; s.count = 0
+    flashEdit(action, count > 0 ? t(cfg.done) : t(cfg.none))
+  }
+}
 
-// ── Fix Colors / Remove White ─────────────────────────────────────────────────
-const handleFixColors  = () => eventBus.emit('fix-colors')
-const handleRemoveWhite = () => eventBus.emit('remove-white')
+const resetEdits = () => {
+  for (const a of EDIT_ACTIONS) Object.assign(editState[a], { armed: false, busy: false, count: 0, flash: '' })
+}
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 onMounted(async () => {
@@ -285,8 +252,10 @@ onMounted(async () => {
   
   // console.log("API response: ", result.message);
 
-  document.addEventListener('click', handleDocClick)
-  eventBus.on('doubles-result', onDoublesResult)
+  // pointerdown (capture) so the dropdowns close on ANY press outside them —
+  // sidebar, preview canvas, etc. — regardless of stopPropagation downstream.
+  document.addEventListener('pointerdown', handleDocClick, true)
+  eventBus.on('edit-result', onEditResult)
   const { printers } = await loadProfiles()
   cutters.value = printers
   // The awaits above already defer past ThreeViewer's onMounted, so its listeners
@@ -295,8 +264,8 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  document.removeEventListener('click', handleDocClick)
-  eventBus.off('doubles-result', onDoublesResult)
+  document.removeEventListener('pointerdown', handleDocClick, true)
+  eventBus.off('edit-result', onEditResult)
 })
 </script>
 
@@ -329,12 +298,13 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
+  background: var(--ctrl-bg);
   border: 1px solid var(--ctrl-border);
   border-radius: 8px;
   cursor: pointer;
   user-select: none;
 }
-.opt-toggle:hover { background: var(--hover-bg); }
+.opt-toggle:hover { background: var(--ctrl-hover); }
 .opt-toggle input { width: 16px; height: 16px; cursor: pointer; accent-color: #DE041F; }
 .opt-text { font-size: 13px; color: var(--text-strong); }
 
@@ -360,7 +330,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
-  background: transparent;
+  background: var(--ctrl-bg);
   border: 1px solid var(--ctrl-border);
   border-radius: 8px;
   font-size: 14px;
@@ -368,7 +338,7 @@ onBeforeUnmount(() => {
   cursor: pointer;
   transition: background 0.2s;
 }
-.sidebar-btn:hover:not(:disabled) { background: var(--hover-bg); }
+.sidebar-btn:hover:not(:disabled) { background: var(--ctrl-hover); }
 /* Armed state: duplicates are highlighted, next click removes them. */
 .sidebar-btn.armed {
   border-color: #ff00ff;
@@ -377,86 +347,17 @@ onBeforeUnmount(() => {
 .sidebar-btn.armed .btn-text { color: #c800c8; font-weight: 600; }
 .btn-text { flex: 1; text-align: left; color: var(--text-strong); }
 
-/* ── Dropdown ──────────────────────────────────────────────── */
-.dropdown-wrapper {
-  position: relative;
+/* Small spinner shown while an edit is detecting/applying. */
+.btn-spinner {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  border: 2px solid var(--ctrl-border);
+  border-top-color: var(--text-strong);
+  border-radius: 50%;
+  animation: btn-spin 0.7s linear infinite;
 }
+@keyframes btn-spin { to { transform: rotate(360deg); } }
 
-.dropdown-toggle {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  padding: 12px 16px;
-  background: transparent;
-  border: 1px solid var(--ctrl-border);
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--text-strong);
-  cursor: pointer;
-  transition: background 0.2s;
-}
-.dropdown-toggle:hover:not(:disabled) { background: var(--hover-bg); }
-.dropdown-toggle:disabled { opacity: 0.5; cursor: not-allowed; }
-
-/* Search field inside the material dropdown */
-.dropdown-search {
-  width: calc(100% - 16px);
-  margin: 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--dropdown-border);
-  border-radius: 6px;
-  background: var(--panel-bg);
-  color: var(--text-strong);
-  font-size: 13px;
-  outline: none;
-  box-sizing: border-box;
-}
-.dropdown-empty {
-  padding: 10px 16px;
-  font-size: 13px;
-  color: var(--text-muted);
-}
-
-.arrow {
-  margin-left: auto;
-  color: var(--text-muted);
-  font-size: 12px;
-  transition: transform 0.2s;
-  display: inline-block;
-}
-.arrow.rotated { transform: rotate(180deg); }
-
-.dropdown-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
-  background: var(--dropdown-bg);
-  border: 1px solid var(--dropdown-border);
-  border-radius: 8px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.12);
-  z-index: 100;
-  overflow: hidden auto;        /* scroll long lists (e.g. cutter/thickness) */
-  max-height: 340px;
-}
-
-/* The (searchable) material list scrolls; the search field above stays put. */
-.dropdown-list {
-  max-height: 260px;
-  overflow-y: auto;
-}
-
-.dropdown-item {
-  display: flex;
-  flex-direction: column;
-  padding: 10px 16px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-.dropdown-item:hover  { background: var(--hover-bg); }
-.dropdown-item.active { background: var(--active-bg); }
-
-.item-name   { font-size: 14px; font-weight: 500; color: var(--text-strong); }
-.item-detail { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+/* The cutter / material / thickness dropdowns now live in ProfileDropdown.vue. */
 </style>

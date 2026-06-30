@@ -46,7 +46,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   height: 42px;
   border-radius: 50%;
   border: 1px solid var(--panel-border);
-  background: var(--panel-bg);
+  background: var(--card-bg);
   box-shadow: var(--panel-shadow);
   cursor: pointer;
   display: flex;

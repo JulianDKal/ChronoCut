@@ -28,7 +28,7 @@ import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import * as THREE from 'three'
 import eventBus from '../eventBus'
-import { buildToolpath, isGreen, SPEED_MM_S, fixColors, computeDoubleRemoval, rotateData, removeWhite, rampSegments, annotateRuns, movePolyline } from '../toolpath'
+import { buildToolpath, isGreen, isRasterColor, SPEED_MM_S, fixColors, computeDoubleRemoval, rotateData, removeWhite, detectFixColors, detectRemoveWhite, rampSegments, annotateRuns, movePolyline } from '../toolpath'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -52,7 +52,7 @@ let cutterH = 700
 // re-fetching from the backend.
 let currentData = null
 let optimizePath = true     // default: optimise path order (printer-like shortest travel)
-let rasterBlock  = false   // draw raster regions as a filling block vs scan lines
+let rasterMode   = 'lines' // raster regions: 'lines' (scan lines) | 'block' (filled) | 'outline'
 let debugColors  = false   // colour every segment randomly (to count them)
 let showTravel   = true    // draw the dotted "Leerwege" (travel) moves
 let speedGradient = false  // debug: colour segments by speed (accel debugging)
@@ -151,8 +151,8 @@ const initThree = () => {
 // ── Theme ─────────────────────────────────────────────────────────────────────
 let isDark = false
 const THEME = {
-  light: { bg: 0xeceef1, bed: 0xffffff, border: 0xd6d9dd },
-  dark:  { bg: 0x1e1f22, bed: 0x2a2c30, border: 0x3a3d42 },
+  light: { bg: 0xdde1e7, bed: 0xffffff, border: 0xd0d4da },
+  dark:  { bg: 0x17181b, bed: 0x2a2c30, border: 0x3a3d42 },
 }
 
 const applyTheme = () => {
@@ -370,16 +370,6 @@ const handleRotateDesign = (dir) => {
   checkFit()
 }
 
-// ── Remove white elements (watermark cleanup) ─────────────────────────────────
-const handleRemoveWhite = () => {
-  if (!currentData) return
-  currentData = removeWhite(currentData)
-  clearHighlight()
-  drawObjects(currentData)
-  contentBox = computeContentBBox(currentData)
-  checkFit()
-}
-
 // Toggle: optimise the cut order (mimic the printer's path optimiser) vs cut in
 // file order. Rebuilds from the retained data — no re-fetch.
 const handleOptimizeChanged = (enabled) => {
@@ -387,9 +377,9 @@ const handleOptimizeChanged = (enabled) => {
   if (currentData) drawObjects(currentData)
 }
 
-// Toggle: raster regions as a filling block vs scan lines. Rebuilds geometry.
-const handleRasterModeChanged = (enabled) => {
-  rasterBlock = !!enabled
+// Raster regions: scan lines / filled block / outline-only block. Rebuilds geometry.
+const handleRasterModeChanged = (mode) => {
+  rasterMode = (mode === 'block' || mode === 'outline') ? mode : 'lines'
   if (currentData) drawObjects(currentData)
 }
 
@@ -413,36 +403,46 @@ const handleSpeedGradientChanged = (enabled) => {
   if (lineMaterial) lineMaterial.uniforms.uGradient.value = speedGradient ? 1 : 0
 }
 
-// ── Edits: Fix Colors / Remove Doubles ────────────────────────────────────────
-// Both mutate currentData (the single source of truth) and rebuild, so the
-// changes show in the viewer AND flow into the PDF download.
+// ── Edits: Fix Colors / Remove White / Remove Doubles ─────────────────────────
+// Unified two-step flow driven by the sidebar:
+//   'edit-detect' → highlight what WOULD change + report the count (no mutation)
+//   'edit-apply'  → perform it (mutates currentData → flows into the PDF export)
+//   'edit-cancel' → just drop the highlight
+// The result is reported back as 'edit-result' { action, count, phase }.
+const handleEditDetect = ({ action }) => {
+  if (!currentData) { eventBus.emit('edit-result', { action, count: 0, phase: 'detect' }); return }
+  let count = 0, segs = []
+  if (action === 'doubles')      { const r = computeDoubleRemoval(currentData); segs = r.removed; count = r.removed.length }
+  else if (action === 'colors')  { const r = detectFixColors(currentData);      segs = r.segs;    count = r.count }
+  else if (action === 'white')   { const r = detectRemoveWhite(currentData);     segs = r.segs;    count = r.count }
+  drawHighlight(segs)
+  eventBus.emit('edit-result', { action, count, phase: 'detect' })
+}
 
-const handleFixColors = () => {
-  if (!currentData) return
-  currentData = fixColors(currentData)
+const handleEditApply = ({ action }) => {
+  if (!currentData) { eventBus.emit('edit-result', { action, count: 0, phase: 'applied' }); return }
+  let count = 0
+  if (action === 'doubles') {
+    const { data, removed } = computeDoubleRemoval(currentData)
+    count = removed.length
+    if (count > 0) currentData = data
+  } else if (action === 'colors') {
+    const fixed = fixColors(currentData)
+    for (let i = 0; i < fixed.length; i++) if (fixed[i] !== currentData[i]) count++
+    if (count > 0) currentData = fixed
+  } else if (action === 'white') {
+    const before = currentData.length
+    currentData = removeWhite(currentData)
+    count = before - currentData.length
+  }
   clearHighlight()
-  eventBus.emit('doubles-result', { count: 0 })  // any armed double-removal resets
   drawObjects(currentData)
+  contentBox = computeContentBBox(currentData)
+  checkFit()
+  eventBus.emit('edit-result', { action, count, phase: 'applied' })
 }
 
-// First click: find + highlight coincident red/blue strokes. Second click
-// (sent as 'doubles-remove' once armed) deletes them. The Sidebar button owns the
-// armed state; we just report the count back.
-const handleDoublesDetect = () => {
-  if (!currentData) { eventBus.emit('doubles-result', { count: 0 }); return }
-  const { removed } = computeDoubleRemoval(currentData)
-  drawHighlight(removed)
-  eventBus.emit('doubles-result', { count: removed.length, fromDetect: true })
-}
-
-const handleDoublesRemove = () => {
-  if (!currentData) return
-  const { data, removed } = computeDoubleRemoval(currentData)
-  if (removed.length > 0) currentData = data
-  clearHighlight()
-  drawObjects(currentData)
-  eventBus.emit('doubles-result', { count: 0 })
-}
+const handleEditCancel = () => clearHighlight()
 
 // Magenta overlay over the removed pieces, drawn above everything else.
 const drawHighlight = (segs) => {
@@ -686,16 +686,16 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
         }
         if (Math.abs(a) > outerAbs) { outerAbs = Math.abs(a); isCCW = a > 0 }
       }
-      const greenFill = isGreen(obj.fill || '#000000')
+      const rasterFill = isRasterColor(obj.fill || '#000000')
       for (const s of sp.toShapes(isCCW)) {
         const geo = new THREE.ShapeGeometry(s)
         const mat = new THREE.MeshBasicMaterial({
           color: themedColor(obj.fill || '#000000'),
           side: THREE.DoubleSide,
-          // Green fill is engraved as a raster (below); show it faintly so the
-          // animated raster lines are visible on top of it.
-          transparent: greenFill,
-          opacity: greenFill ? 0.3 : 1,
+          // Raster fills (green or grayscale) are engraved as a raster (below); show
+          // them faintly so the animated raster lines are visible on top.
+          transparent: rasterFill,
+          opacity: rasterFill ? 0.3 : 1,
         })
         drawingGroup.add(new THREE.Mesh(geo, mat))
       }
@@ -734,7 +734,7 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
   const segSpeed = []     // target speed (mm/s) of the move
   const dashes   = []     // per vertex: 1 = dashed travel, 0 = solid beam-on
   const dists    = []     // per vertex: world distance (mm) along the run (dashing)
-  const rasterBlocks = [] // { bbox, t0, t1, color } when "raster as block" is on
+  const rasterBlocks = [] // { bbox, t0, t1, color } when raster is shown as block/outline
   const headRuns = []     // per run: { t0, T, S, v, pts[], cum[] } for the head marker
   let runTime = 0         // running time along the toolpath
   let headRun = null
@@ -744,10 +744,10 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
     const speed = (m.category === 'raster' ? (currentSpeeds.raster ?? currentSpeeds.engrave)
                                            : currentSpeeds[m.kind]) || currentSpeeds.other || SPEED_MM_S.other
 
-    if (m.category === 'raster' && rasterBlock && m.bbox) {
-      // Engrave region as a filling block: skip the serpentine segments, record
-      // the region + its time span, and advance the clock by the same duration
-      // so the overall timeline is identical to the scan-line version.
+    if (m.category === 'raster' && rasterMode !== 'lines' && m.bbox) {
+      // Engrave region as a block (filled or outline-only): skip the serpentine
+      // segments, record the region + its time span, and advance the clock by the
+      // same duration so the overall timeline matches the scan-line version.
       flushHeadRun()
       const dur = rampSegments(movePolyline(m), speed, currentAccel).total
       rasterBlocks.push({ bbox: m.bbox, t0: runTime, t1: runTime + dur, color: lineRGB(m.color) })
@@ -917,47 +917,71 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
     lineMaterial = mat
   }
 
-  // Raster-as-block meshes: one quad per region, filled top→bottom over its time
-  // span. Same uProgress drives them, so they reveal in sync with the toolpath.
+  // Raster-as-block: one region per entry, revealed top→bottom over its time span
+  // (same uProgress as the toolpath). 'block' = filled quad; 'outline' = just the
+  // rectangle frame so the content underneath stays visible. Both share the same
+  // reveal fragment shader (vY01: 0 at top, 1 at bottom).
+  const blockFragment = `
+    uniform float uProgress;
+    uniform float uPreviewAlpha;
+    uniform float uT0;
+    uniform float uT1;
+    uniform vec3  uColor;
+    varying float vY01;
+    void main() {
+      float t = mix(uT0, uT1, vY01);   // each row engraves at its own time
+      float a = t <= uProgress ? 1.0 : uPreviewAlpha;
+      gl_FragColor = vec4(uColor, a);
+    }
+  `
   for (const blk of rasterBlocks) {
-    const w = blk.bbox.maxX - blk.bbox.minX
-    const h = blk.bbox.maxY - blk.bbox.minY
+    const { minX, maxX, minY, maxY } = blk.bbox
+    const w = maxX - minX, h = maxY - minY
     if (w <= 0 || h <= 0) continue
-    const mat = new THREE.ShaderMaterial({
-      transparent: true,
-      depthWrite: false,
-      uniforms: {
-        uProgress:     { value: 0 },
-        uPreviewAlpha: { value: PREVIEW_OPACITY },
-        uT0:    { value: blk.t0 },
-        uT1:    { value: blk.t1 },
-        uColor: { value: new THREE.Color(blk.color[0], blk.color[1], blk.color[2]) },
-      },
-      vertexShader: `
-        varying float vY01;
-        void main() {
-          vY01 = 1.0 - uv.y;   // 0 at top, 1 at bottom
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `,
-      fragmentShader: `
-        uniform float uProgress;
-        uniform float uPreviewAlpha;
-        uniform float uT0;
-        uniform float uT1;
-        uniform vec3  uColor;
-        varying float vY01;
-        void main() {
-          float t = mix(uT0, uT1, vY01);   // each row engraves at its own time
-          float a = t <= uProgress ? 1.0 : uPreviewAlpha;
-          gl_FragColor = vec4(uColor, a);
-        }
-      `,
-    })
-    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat)
-    mesh.position.set((blk.bbox.minX + blk.bbox.maxX) / 2, (blk.bbox.minY + blk.bbox.maxY) / 2, 0.03)
-    drawingGroup.add(mesh)
-    revealMaterials.push(mat)
+    const uniforms = {
+      uProgress:     { value: 0 },
+      uPreviewAlpha: { value: PREVIEW_OPACITY },
+      uT0:    { value: blk.t0 },
+      uT1:    { value: blk.t1 },
+      uColor: { value: new THREE.Color(blk.color[0], blk.color[1], blk.color[2]) },
+    }
+    let obj
+    if (rasterMode === 'outline') {
+      // Rectangle frame (4 edges); reveals downward like the fill, interior stays clear.
+      const verts = [minX, maxY, 0,  maxX, maxY, 0,   // top
+                     maxX, maxY, 0,  maxX, minY, 0,   // right
+                     maxX, minY, 0,  minX, minY, 0,   // bottom
+                     minX, minY, 0,  minX, maxY, 0]   // left
+      const y01 = [0, 0,  0, 1,  1, 1,  1, 0]         // 0 at top edge, 1 at bottom edge
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3))
+      geo.setAttribute('aY01',     new THREE.BufferAttribute(new Float32Array(y01), 1))
+      const mat = new THREE.ShaderMaterial({
+        transparent: true, depthWrite: false, uniforms,
+        vertexShader: `
+          attribute float aY01;
+          varying float vY01;
+          void main() { vY01 = aY01; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+        `,
+        fragmentShader: blockFragment,
+      })
+      obj = new THREE.LineSegments(geo, mat)
+      obj.position.z = 0.03
+      revealMaterials.push(mat)
+    } else {
+      const mat = new THREE.ShaderMaterial({
+        transparent: true, depthWrite: false, uniforms,
+        vertexShader: `
+          varying float vY01;
+          void main() { vY01 = 1.0 - uv.y; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+        `,
+        fragmentShader: blockFragment,
+      })
+      obj = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat)
+      obj.position.set((minX + maxX) / 2, (minY + maxY) / 2, 0.03)
+      revealMaterials.push(mat)
+    }
+    drawingGroup.add(obj)
   }
 
   if (revealMaterials.length > 0) {
@@ -1141,7 +1165,6 @@ onMounted(() => {
   eventBus.on('cutter-selected',    handleCutterSelected)
   eventBus.on('speeds-changed',     handleSpeedsChanged)
   eventBus.on('rotate-design',      handleRotateDesign)
-  eventBus.on('remove-white',       handleRemoveWhite)
   eventBus.on('save_pdf_request',   handleDownloadRequest)
   eventBus.on('optimize-changed',   handleOptimizeChanged)
   eventBus.on('raster-mode-changed', handleRasterModeChanged)
@@ -1150,9 +1173,9 @@ onMounted(() => {
   eventBus.on('speed-gradient-changed', handleSpeedGradientChanged)
   eventBus.on('rulers-changed',     handleRulersChanged)
   eventBus.on('tiny-highlight-changed', handleTinyHighlight)
-  eventBus.on('fix-colors',         handleFixColors)
-  eventBus.on('doubles-detect',     handleDoublesDetect)
-  eventBus.on('doubles-remove',     handleDoublesRemove)
+  eventBus.on('edit-detect',        handleEditDetect)
+  eventBus.on('edit-apply',         handleEditApply)
+  eventBus.on('edit-cancel',        handleEditCancel)
   eventBus.on('playback_playpause', handlePlayPause)
   eventBus.on('playback_speed',     handleSpeed)
   eventBus.on('playback_seek',      handleSeek)
@@ -1165,7 +1188,6 @@ onBeforeUnmount(() => {
   eventBus.off('cutter-selected',    handleCutterSelected)
   eventBus.off('speeds-changed',     handleSpeedsChanged)
   eventBus.off('rotate-design',      handleRotateDesign)
-  eventBus.off('remove-white',       handleRemoveWhite)
   eventBus.off('save_pdf_request',   handleDownloadRequest)
   eventBus.off('optimize-changed',   handleOptimizeChanged)
   eventBus.off('raster-mode-changed', handleRasterModeChanged)
@@ -1174,9 +1196,9 @@ onBeforeUnmount(() => {
   eventBus.off('speed-gradient-changed', handleSpeedGradientChanged)
   eventBus.off('rulers-changed',     handleRulersChanged)
   eventBus.off('tiny-highlight-changed', handleTinyHighlight)
-  eventBus.off('fix-colors',         handleFixColors)
-  eventBus.off('doubles-detect',     handleDoublesDetect)
-  eventBus.off('doubles-remove',     handleDoublesRemove)
+  eventBus.off('edit-detect',        handleEditDetect)
+  eventBus.off('edit-apply',         handleEditApply)
+  eventBus.off('edit-cancel',        handleEditCancel)
   eventBus.off('playback_playpause', handlePlayPause)
   eventBus.off('playback_speed',     handleSpeed)
   eventBus.off('playback_seek',      handleSeek)
