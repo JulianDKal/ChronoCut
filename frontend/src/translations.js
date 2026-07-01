@@ -92,6 +92,8 @@ const messages = {
     fast: 'schnell',
     // Playback
     speed: 'Tempo',
+    customSpeed: 'x',
+    apply: 'Übernehmen',
     // Download + breakdown
     download: 'Herunterladen',
     estTime: 'Geschätzte Zeit',
@@ -174,6 +176,8 @@ const messages = {
     fast: 'fast',
     // Playback
     speed: 'Speed',
+    customSpeed: 'x',
+    apply: 'Apply',
     // Download + breakdown
     download: 'Download',
     estTime: 'Estimated time',

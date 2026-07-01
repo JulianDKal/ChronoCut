@@ -169,9 +169,9 @@ const rows = computed(() => {
   const s = stats.value
   if (!s) return []
   return [
+    { key: 'cut',     label: t('opCut'),           len: s.cutLen,     time: s.cutTime,     color: '#2f6df0' },
     { key: 'engrave', label: t('opVectorEngrave'), len: s.engraveLen, time: s.engraveTime, color: '#e0413a' },
     { key: 'raster',  label: t('opRasterEngrave'), len: s.rasterLen,  time: s.rasterTime,  color: '#00a000' },
-    { key: 'cut',     label: t('opCut'),           len: s.cutLen,     time: s.cutTime,     color: '#2f6df0' },
     { key: 'other',   label: t('opOther'),         len: s.otherLen,   time: s.otherTime,   color: '#b07cff' },
     { key: 'travel',  label: t('opTravel'),        len: s.travelLen,  time: s.travelTime,  color: '#9aa0a6' },
   ].filter((d) => d.len > 0.05).map((d) => ({ ...d, time: fmtTime(d.time) }))

@@ -113,9 +113,9 @@ const rows = computed(() => {
   const s = stats.value
   if (!s) return []
   const defs = [
+    { key: 'cut',     label: t('opCut'),           len: s.cutLen,     time: s.cutTime,     color: '#2f6df0' },
     { key: 'engrave', label: t('opVectorEngrave'), len: s.engraveLen, time: s.engraveTime, color: '#e0413a' },
     { key: 'raster',  label: t('opRasterEngrave'), len: s.rasterLen,  time: s.rasterTime,  color: '#00a000' },
-    { key: 'cut',     label: t('opCut'),           len: s.cutLen,     time: s.cutTime,     color: '#2f6df0' },
     { key: 'other',   label: t('opOther'),         len: s.otherLen,   time: s.otherTime,   color: '#b07cff' },
     { key: 'travel',  label: t('opTravel'),        len: s.travelLen,  time: s.travelTime,  color: '#9aa0a6' },
   ]
@@ -157,6 +157,9 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 14px;
   padding: 16px 20px;
+  /* Without a cap, a long warning sentence (e.g. the tiny-parts note) would
+     force the whole floating island wider instead of wrapping. */
+  max-width: 300px;
 }
 
 /* Timer Section */

@@ -57,6 +57,12 @@
       </div>
     </div>
     </div>
+
+    <!-- Teleport target for floating UI (e.g. PlayBack's speed menu) that must
+         escape an ancestor's `overflow: hidden` but still needs the theme's
+         CSS custom properties (--dropdown-bg etc.), which only cascade within
+         .cc-theme — teleporting straight to <body> would lose them. -->
+    <div id="cc-portal-root"></div>
   </div>
 </template>
 
@@ -249,7 +255,10 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: flex-end;   /* each island keeps its own height */
   gap: 16px;
-  z-index: 10;
+  /* Above the top-right buttons (theme toggle 20, view toggles 20, language
+     switcher 30) so an expanded island (e.g. the download breakdown growing
+     tall) renders in front of them instead of colliding underneath. */
+  z-index: 40;
   /* Let clicks pass through to the canvas everywhere except on the islands. */
   pointer-events: none;
   transition: opacity 0.25s ease, filter 0.25s ease;
