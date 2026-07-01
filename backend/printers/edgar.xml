@@ -6,7 +6,7 @@
   Colours -> operations: blue=cut, red=engrave (vector), green=raster.
   speed/power are % of the printer maxSpeed/power; raster carries dpi.
 -->
-<printer id="edgar" name="Edgar" powerW="60" bedWidth="1016" bedHeight="711" maxSpeed="250" accel="300">
+<printer id="edgar" name="Edgar" powerW="60" bedWidth="1016" bedHeight="711" maxSpeed="250" accel="1500">
   <materials>
     <material name="Acryl">
       <thickness value="0.5 mm" id="Acryl_0_5mm">
