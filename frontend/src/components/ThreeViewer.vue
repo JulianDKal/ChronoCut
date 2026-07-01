@@ -29,6 +29,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import * as THREE from 'three'
 import eventBus from '../eventBus'
 import { buildToolpath, isGreen, isRasterColor, SPEED_MM_S, fixColors, computeDoubleRemoval, rotateData, removeWhite, detectFixColors, detectRemoveWhite, rampSegments, annotateRuns, movePolyline } from '../toolpath'
+import { getStoredDark } from '../theme'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -149,7 +150,10 @@ const initThree = () => {
 }
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
-let isDark = false
+// Read the persisted preference directly (not just via the 'theme-changed' event)
+// so a fresh mount — e.g. coming back from the mobile layout, which unmounts and
+// remounts this component — always starts in sync with the rest of the UI.
+let isDark = getStoredDark()
 const THEME = {
   light: { bg: 0xdde1e7, bed: 0xffffff, border: 0xd0d4da },
   dark:  { bg: 0x17181b, bed: 0x2a2c30, border: 0x3a3d42 },

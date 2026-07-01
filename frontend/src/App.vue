@@ -72,6 +72,7 @@ import ThemeToggle from './components/ThemeToggle.vue'
 import ViewToggles from './components/ViewToggles.vue'
 import eventBus from './eventBus'
 import { t } from './translations'
+import { THEME_KEY, getStoredDark } from './theme'
 
 // Mobile vs. desktop layout. On a narrow viewport we render the plain MobileApp
 // instead of the full 3D-viewer layout. Kept reactive so rotating a phone or
@@ -103,10 +104,10 @@ const fit = ref(null)
 const onFitStatus = (s) => { fit.value = s }
 const rotate = (dir) => eventBus.emit('rotate-design', dir)
 
-// Dark mode (the viewer reacts via the 'theme-changed' event). The preference is
-// persisted across reloads in localStorage.
-const THEME_KEY = 'chronocut-theme'
-const isDark = ref(localStorage.getItem(THEME_KEY) === 'dark')
+// Dark mode (the viewer reacts via the 'theme-changed' event, and also reads the
+// stored value directly on its own mount — see theme.js — so it stays in sync
+// even when it's unmounted/remounted, e.g. by the mobile/desktop layout switch).
+const isDark = ref(getStoredDark())
 const toggleTheme = () => {
   isDark.value = !isDark.value
   localStorage.setItem(THEME_KEY, isDark.value ? 'dark' : 'light')

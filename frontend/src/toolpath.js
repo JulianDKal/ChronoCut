@@ -694,13 +694,17 @@ function primLength(p) {
 }
 
 // Reconstruct connected paths from the flat l/c stream, keeping each item as a
-// primitive. Consecutive items of the same colour whose endpoints meet merge.
-function reconstructPaths(data) {
-  const paths = []
-  let cur = null
-  const eq = (a, b) => Math.abs(a.x - b.x) < 0.01 && Math.abs(a.y - b.y) < 0.01
-  const flush = () => { if (cur && cur.prims.length) paths.push(cur); cur = null }
+// primitive. Primitives link by matching ENDPOINTS (a spatial lookup), not by
+// sitting next to each other in the array — so reconstruction is independent of
+// item order. This matters because edits like Remove Doubles rebuild the line
+// list grouped by shared direction/offset (not by connectivity), which used to
+// shatter closed polygons into unclosed fragments and silently zero out the
+// small-/tiny-part warnings. Order-independent linking fixes that for any
+// edit or extraction order.
+const LINK_TOL = 0.01   // mm — matches the old adjacency tolerance
 
+function reconstructPaths(data) {
+  const prims = []
   for (const obj of data) {
     let prim, color
     if (obj.type === 'l') {
@@ -717,15 +721,77 @@ function reconstructPaths(data) {
       continue // fp / img / mbox are not vector toolpaths
     }
     const cat = categorize(color)
-    if (cur && cur.category === cat && eq(cur.end, primStart(prim))) {
-      cur.prims.push(prim)
-      cur.end = primEnd(prim)
-    } else {
-      flush()
-      cur = { category: cat, color, prims: [prim], start: primStart(prim), end: primEnd(prim) }
-    }
+    prims.push({ cat, color, prim, start: primStart(prim), end: primEnd(prim) })
   }
-  flush()
+
+  const n = prims.length
+  const used = new Array(n).fill(false)
+
+  // Spatial index: bucket key (category + quantised point) -> endpoints there.
+  // Query checks the 3×3 neighbourhood so points straddling a bucket edge
+  // within LINK_TOL still match.
+  const bucketKey = (cat, x, y) => `${cat}|${Math.round(x / LINK_TOL)}|${Math.round(y / LINK_TOL)}`
+  const index = new Map()
+  const addEntry = (idx, which) => {
+    const pt = which === 'start' ? prims[idx].start : prims[idx].end
+    const k = bucketKey(prims[idx].cat, pt.x, pt.y)
+    if (!index.has(k)) index.set(k, [])
+    index.get(k).push({ idx, which })
+  }
+  for (let i = 0; i < n; i++) { addEntry(i, 'start'); addEntry(i, 'end') }
+
+  const findMatch = (cat, x, y) => {
+    const bx = Math.round(x / LINK_TOL), by = Math.round(y / LINK_TOL)
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const list = index.get(`${cat}|${bx + dx}|${by + dy}`)
+        if (!list) continue
+        for (const e of list) {
+          if (used[e.idx]) continue
+          const pt = e.which === 'start' ? prims[e.idx].start : prims[e.idx].end
+          if (Math.abs(pt.x - x) < LINK_TOL && Math.abs(pt.y - y) < LINK_TOL) return e
+        }
+      }
+    }
+    return null
+  }
+  const closes = (a, b) => Math.abs(a.x - b.x) < LINK_TOL && Math.abs(a.y - b.y) < LINK_TOL
+
+  const paths = []
+  for (let i = 0; i < n; i++) {
+    if (used[i]) continue
+    used[i] = true
+    const seed = prims[i]
+    const chain = [seed.prim]
+    const cat = seed.cat, color = seed.color
+    let head = seed.start, tail = seed.end
+
+    // Extend forward from the tail (next primitive's start must meet our tail).
+    for (;;) {
+      const m = findMatch(cat, tail.x, tail.y)
+      if (!m) break
+      used[m.idx] = true
+      let next = prims[m.idx].prim
+      if (m.which === 'end') next = reversePrim(next)   // orient so its start == tail
+      chain.push(next)
+      tail = primEnd(next)
+      if (closes(tail, head)) break                     // loop closed
+    }
+    // Extend backward from the head (only if not already closed into a loop).
+    if (!closes(tail, head)) {
+      for (;;) {
+        const m = findMatch(cat, head.x, head.y)
+        if (!m) break
+        used[m.idx] = true
+        let prev = prims[m.idx].prim
+        if (m.which === 'start') prev = reversePrim(prev)   // orient so its end == head
+        chain.unshift(prev)
+        head = primStart(prev)
+        if (closes(tail, head)) break
+      }
+    }
+    paths.push({ category: cat, color, prims: chain, start: head, end: tail })
+  }
   return paths
 }
 

@@ -1,6 +1,7 @@
 import { createApp } from 'vue'
 import App from './App.vue'
 import './theme.css'
+import '@fontsource/inter/800.css'   // used by the "ChronoCut" title in the mobile view
 
 // Add this to remove default margins
 const style = document.createElement('style')

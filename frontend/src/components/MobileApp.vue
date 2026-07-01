@@ -322,7 +322,7 @@ onMounted(async () => {
 }
 .m-logo { width: 44px; height: 44px; flex-shrink: 0; }
 .m-titles { flex: 1; min-width: 0; }
-.m-title { font-size: 22px; font-weight: 800; line-height: 1.1; margin: 0; }
+.m-title { font-family: 'Inter', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 22px; font-weight: 800; line-height: 1.1; margin: 0; }
 .m-tagline { font-size: 12px; color: var(--text-muted); margin: 2px 0 0; }
 
 /* Upload */
