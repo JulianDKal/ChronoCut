@@ -28,8 +28,16 @@ import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import * as THREE from 'three'
 import eventBus from '../eventBus'
-import { buildToolpath, isGreen, isRasterColor, SPEED_MM_S, fixColors, computeDoubleRemoval, rotateData, removeWhite, detectFixColors, detectRemoveWhite, rampSegments, annotateRuns, movePolyline } from '../toolpath'
+import { buildToolpath, isGreen, isRasterColor, SPEED_MM_S, fixColors, computeDoubleRemoval, rotateData, removeWhite, detectFixColors, detectRemoveWhite, rampSegments, annotateRuns, movePolyline, accelFor, cornerPenaltyFor, moveExtraTime, DEFAULT_PATH_ORDER, dist, setTessellationTolerance, RASTER_BITMAP_MARK } from '../toolpath'
 import { getStoredDark } from '../theme'
+import { getStoredViewSettings, TESSELLATION_TOL_BY_KEY } from '../viewSettings'
+
+// Restored once here (module scope, evaluated on first import) rather than
+// read individually per variable below — same "self-source on mount, don't
+// only wait for a broadcast" reasoning as getStoredDark(), so this stays
+// correct even if ViewToggles ever mounts after ThreeViewer or not at all.
+const restoredViewSettings = getStoredViewSettings()
+setTessellationTolerance(TESSELLATION_TOL_BY_KEY[restoredViewSettings.tessellation] ?? TESSELLATION_TOL_BY_KEY.normal)
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -52,13 +60,17 @@ let cutterH = 700
 // Retained so we can rebuild the toolpath when a toggle changes without
 // re-fetching from the backend.
 let currentData = null
-let optimizePath = true     // default: optimise path order (printer-like shortest travel)
-let rasterMode   = 'lines' // raster regions: 'lines' (scan lines) | 'block' (filled) | 'outline'
-let debugColors  = false   // colour every segment randomly (to count them)
-let showTravel   = true    // draw the dotted "Leerwege" (travel) moves
-let speedGradient = false  // debug: colour segments by speed (accel debugging)
+// Defaults below are restored from localStorage (see viewSettings.js) so a
+// reload comes back exactly as left; ViewToggles re-broadcasts the same
+// values once on its own mount (its state is the interactive source of truth
+// after that), which is what live-updates these while the page stays open.
+let optimizePath = restoredViewSettings.pathOrder    // algorithm id: 'file' | 'nn' | '2opt' (see toolpath.js)
+let rasterMode   = restoredViewSettings.rasterMode   // 'lines' (scan lines) | 'block' (filled) | 'outline'
+let debugColors  = restoredViewSettings.debugColors  // colour every segment randomly (to count them)
+let showTravel   = restoredViewSettings.showTravel   // draw the dotted "Leerwege" (travel) moves
+let speedGradient = restoredViewSettings.speedGradient // debug: colour segments by speed (accel debugging)
 let lineMaterial = null    // toolpath line material (for live travel show/hide)
-let showRulers   = true    // CAD-style rulers along the top + left edges (mm)
+let showRulers   = restoredViewSettings.showRulers   // CAD-style rulers along the top + left edges (mm)
 let lastRulerSig = ''      // redraw the rulers only when the view actually changes
 let tinyBoxes = []         // bounding boxes of parts small enough to fall through the grid
 let showTinyHighlight = false  // highlight those parts in the viewer (on demand)
@@ -92,7 +104,16 @@ const adjustForTheme = ([r, g, b]) => {
   }
   return [r, g, b]
 }
-const lineRGB = (hex) => adjustForTheme(hexToRGB(hex))
+// Bitmap raster scan lines carry a MARKER colour (toolpath.js's
+// RASTER_BITMAP_MARK), not a real one — a fixed hex can't work in both themes
+// (white vanishes on the light theme's white bed, a mid gray looks washed out
+// on the dark theme's dark bed). Resolve it to a real colour per theme instead.
+const lineRGB = (hex) => {
+  if (hex && hex.toLowerCase() === RASTER_BITMAP_MARK) {
+    return isDark ? [1, 1, 1] : [0.25, 0.25, 0.25]
+  }
+  return adjustForTheme(hexToRGB(hex))
+}
 const themedColor = (hex) => { const [r, g, b] = lineRGB(hex); return new THREE.Color(r, g, b) }
 
 // Playback state for the single toolpath line. The reveal axis is TIME (so the
@@ -376,14 +397,21 @@ const handleRotateDesign = (dir) => {
 
 // Toggle: optimise the cut order (mimic the printer's path optimiser) vs cut in
 // file order. Rebuilds from the retained data — no re-fetch.
-const handleOptimizeChanged = (enabled) => {
-  optimizePath = !!enabled
+const handleOptimizeChanged = (algo) => {
+  optimizePath = algo || 'file'
   if (currentData) drawObjects(currentData)
 }
 
 // Raster regions: scan lines / filled block / outline-only block. Rebuilds geometry.
 const handleRasterModeChanged = (mode) => {
   rasterMode = (mode === 'block' || mode === 'outline') ? mode : 'lines'
+  if (currentData) drawObjects(currentData)
+}
+
+// Curve viewing fidelity (bezier flatness tolerance, mm). Only affects how
+// closely rendered curves hug the true path — not the time estimate.
+const handleTessellationChanged = (tolMm) => {
+  setTessellationTolerance(tolMm)
   if (currentData) drawObjects(currentData)
 }
 
@@ -620,7 +648,7 @@ const headPosAt = (t) => {
   while (lo < hi) { const m = (lo + hi + 1) >> 1; if (runs[m].t0 <= t) lo = m; else hi = m - 1 }
   const run = runs[lo]
   const tl = Math.max(0, Math.min(run.T, t - run.t0))  // clamp into the run (gaps park at its end)
-  return xyAtArc(run, distAtTime(tl, run.S, run.v, currentAccel))
+  return xyAtArc(run, distAtTime(tl, run.S, run.v, run.a ?? currentAccel))
 }
 
 const updateHeadMarker = () => {
@@ -738,6 +766,7 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
   const segSpeed = []     // target speed (mm/s) of the move
   const dashes   = []     // per vertex: 1 = dashed travel, 0 = solid beam-on
   const dists    = []     // per vertex: world distance (mm) along the run (dashing)
+  const segAccel = []     // per vertex: acceleration of the move (raster uses 0)
   const rasterBlocks = [] // { bbox, t0, t1, color } when raster is shown as block/outline
   const headRuns = []     // per run: { t0, T, S, v, pts[], cum[] } for the head marker
   let runTime = 0         // running time along the toolpath
@@ -753,8 +782,20 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
       // segments, record the region + its time span, and advance the clock by the
       // same duration so the overall timeline matches the scan-line version.
       flushHeadRun()
-      const dur = rampSegments(movePolyline(m), speed, currentAccel).total
+      const dur = rampSegments(movePolyline(m), speed, accelFor(m, currentAccel),
+                               cornerPenaltyFor(m)).total + moveExtraTime(m)
       rasterBlocks.push({ bbox: m.bbox, t0: runTime, t1: runTime + dur, color: lineRGB(m.color) })
+      // Give the marker a run covering the block. Without one there is a time gap
+      // with no run at all, and headPosAt falls back to the PREVIOUS run and parks
+      // the marker at its end — the head appears to jump ahead and sit there for
+      // the whole engrave. Swept at constant speed (a = 0) over the real scan path.
+      const bp = movePolyline(m)
+      if (bp.length > 1) {
+        const bcum = [0]
+        for (let i = 1; i < bp.length; i++) bcum.push(bcum[i - 1] + dist(bp[i - 1], bp[i]))
+        const S = bcum[bcum.length - 1]
+        headRuns.push({ t0: runTime, T: dur, S, v: S / Math.max(dur, 1e-6), a: 0, pts: bp, cum: bcum })
+      }
       runTime += dur
       continue
     }
@@ -765,7 +806,7 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
     // annotateRuns splits the polyline at sharp corners (raster turnarounds, the
     // 90° step between scan rows) and returns, per segment, its position in the
     // run's velocity profile (s0/s1/S) plus its duration.
-    const ann = annotateRuns(pts, speed, currentAccel)
+    const ann = annotateRuns(pts, speed, accelFor(m, currentAccel), cornerPenaltyFor(m))
     const moveStart = runTime
     const baseRgb = lineRGB(m.color)
 
@@ -774,7 +815,14 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
       const t0run = moveStart + info.runStartRel
       if (!headRun || headRun.t0 !== t0run) {            // new run begins
         flushHeadRun()
-        headRun = { t0: t0run, T: 0, S: info.S, v: speed, pts: [pts[i]], cum: [0] }
+        // annotateRuns' timeline is authoritative: it also charges the per-corner
+        // stop penalty BETWEEN runs, which `runTime += info.dur` alone does not
+        // see. Without resyncing here, run t0s stop increasing monotonically and
+        // headPosAt's binary search picks the wrong run — the marker then jumps
+        // ahead of the drawn line.
+        runTime = t0run
+        headRun = { t0: t0run, T: 0, S: info.S, v: speed,
+                    a: accelFor(m, currentAccel), pts: [pts[i]], cum: [0] }
       }
       const rgb = debugColors ? [Math.random(), Math.random(), Math.random()] : baseRgb
       runTime += info.dur
@@ -787,8 +835,10 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
       segSpeed.push(speed, speed)
       dashes.push(isTravel ? 1 : 0, isTravel ? 1 : 0)
       dists.push(info.s0, info.s1)
+      segAccel.push(accelFor(m, currentAccel), accelFor(m, currentAccel))
       headRun.pts.push(q); headRun.cum.push(info.s1); headRun.T += info.dur
     }
+    runTime += moveExtraTime(m)   // keep the clock equal to stats.totalTime
   }
   flushHeadRun()
 
@@ -810,6 +860,7 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
     geo.setAttribute('aRunLen',   new THREE.BufferAttribute(new Float32Array(runLen), 1))
     geo.setAttribute('aRunT0',    new THREE.BufferAttribute(new Float32Array(runT0), 1))
     geo.setAttribute('aSpeed',    new THREE.BufferAttribute(new Float32Array(segSpeed), 1))
+    geo.setAttribute('aAccel',    new THREE.BufferAttribute(new Float32Array(segAccel), 1))
     geo.setAttribute('aDash',     new THREE.BufferAttribute(new Float32Array(dashes), 1))
     geo.setAttribute('aDist',     new THREE.BufferAttribute(new Float32Array(dists), 1))
 
@@ -829,6 +880,7 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
         attribute float aRunLen;
         attribute float aRunT0;
         attribute float aSpeed;
+        attribute float aAccel;
         attribute float aDash;
         attribute float aDist;
         varying vec3 vColor;
@@ -836,6 +888,7 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
         varying float vRunLen;
         varying float vRunT0;
         varying float vSpeed;
+        varying float vAccel;
         varying float vDash;
         varying float vDist;
         void main() {
@@ -844,6 +897,7 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
           vRunLen = aRunLen;
           vRunT0 = aRunT0;
           vSpeed = aSpeed;
+          vAccel = aAccel;
           vDash = aDash;
           vDist = aDist;
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
@@ -860,12 +914,13 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
         varying float vRunLen;
         varying float vRunT0;
         varying float vSpeed;
+        varying float vAccel;
         varying float vDash;
         varying float vDist;
 
         // Speed (mm/s) at arc-length s in a run (rest→cruise→rest, accel uAccel).
         float speedAt(float s, float S, float v) {
-          float a = uAccel;
+          float a = vAccel;
           if (a <= 0.0 || v <= 0.0) return v;
           float dAcc = (v * v) / (2.0 * a);
           if (2.0 * dAcc <= S) {
@@ -878,7 +933,7 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
         }
         // Time (s) from the run start to arc-length s.
         float timeAt(float s, float S, float v) {
-          float a = uAccel;
+          float a = vAccel;
           if (a <= 0.0 || v <= 0.0) return v > 0.0 ? s / v : 0.0;
           float dAcc = (v * v) / (2.0 * a);
           if (2.0 * dAcc <= S) {
@@ -1172,6 +1227,7 @@ onMounted(() => {
   eventBus.on('save_pdf_request',   handleDownloadRequest)
   eventBus.on('optimize-changed',   handleOptimizeChanged)
   eventBus.on('raster-mode-changed', handleRasterModeChanged)
+  eventBus.on('tessellation-changed', handleTessellationChanged)
   eventBus.on('debug-colors-changed', handleDebugColorsChanged)
   eventBus.on('show-travel-changed', handleShowTravelChanged)
   eventBus.on('speed-gradient-changed', handleSpeedGradientChanged)
@@ -1195,6 +1251,7 @@ onBeforeUnmount(() => {
   eventBus.off('save_pdf_request',   handleDownloadRequest)
   eventBus.off('optimize-changed',   handleOptimizeChanged)
   eventBus.off('raster-mode-changed', handleRasterModeChanged)
+  eventBus.off('tessellation-changed', handleTessellationChanged)
   eventBus.off('debug-colors-changed', handleDebugColorsChanged)
   eventBus.off('show-travel-changed', handleShowTravelChanged)
   eventBus.off('speed-gradient-changed', handleSpeedGradientChanged)

@@ -46,6 +46,56 @@ def pt2mm(v: float) -> float:
     return round(v * MM_PER_PT, 3)
 
 
+# ── SVG style-conflict normalisation ──────────────────────────────────────────
+# By the CSS cascade, an inline style="" declaration should win over a same-named
+# presentation attribute (stroke="" / fill="") on the same element. MuPDF's SVG
+# reader does the opposite: whenever both are present it always keeps the
+# ATTRIBUTE, regardless of which was written more recently or which order they
+# appear in. This is invisible for CorelDraw's PDF export (PDF has no such
+# attribute-vs-style distinction), but it bites the moment someone edits an SVG
+# in Inkscape/Illustrator: those editors write style="stroke:#rrggbb" and often
+# leave a stale stroke="" attribute from before the edit — so the element renders
+# correctly (style wins) everywhere except in our pipeline (attribute wins),
+# silently reclassifying a red vector-engrave line as a blue cut, or vice versa.
+#
+# Fix: before handing the SVG to MuPDF, make the two agree — overwrite each
+# presentation attribute with its style-block value wherever both are present
+# and differ, so MuPDF's (wrong) attribute-first preference now reads the
+# correct, CSS-resolved colour either way.
+_STYLE_PROPS = ("stroke", "fill")
+
+def _parse_style(style: str) -> Dict[str, str]:
+    out = {}
+    for decl in style.split(";"):
+        if ":" not in decl:
+            continue
+        k, v = decl.split(":", 1)
+        out[k.strip()] = v.strip()
+    return out
+
+def _normalize_svg_style_conflicts(raw: bytes) -> bytes:
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as e:
+        print(f"[extract] SVG style-normalise skipped (parse failed): {e}")
+        return raw
+
+    changed = 0
+    for el in root.iter():
+        style = el.get("style")
+        if not style:
+            continue
+        decls = _parse_style(style)
+        for prop in _STYLE_PROPS:
+            if prop in decls and el.get(prop) != decls[prop]:
+                el.set(prop, decls[prop])
+                changed += 1
+    if not changed:
+        return raw
+    print(f"[extract] SVG style-normalise: resolved {changed} attribute/style conflict(s)")
+    return ET.tostring(root, encoding="utf-8")
+
+
 # ── Watermark stripping ───────────────────────────────────────────────────────
 # Find the (mm) bounding boxes of watermark phrases on a page, then drop any
 # extracted vector/text whose centre lands inside one. Coordinates match the
@@ -130,6 +180,8 @@ async def extract_pdf_lines(file: UploadFile = File(...)):
 # ── Sync extraction (runs in thread pool) ────────────────────────────────────
 
 def extract_sync(file_bytes: bytes, filetype: str = "pdf", watermarks=None) -> dict:
+    if filetype == "svg":
+        file_bytes = _normalize_svg_style_conflicts(file_bytes)
     doc = pymupdf.open(stream=file_bytes, filetype=filetype)
     objects: List[Dict] = []
     page_num = 0
@@ -251,6 +303,17 @@ def _build_fp(drw: dict) -> Dict | None:
             path.append({"cmd": "Z"})
             open_sub = False
             last = (x0, y0)
+        elif kind == "qu":
+            # See _append_strokes: MuPDF folds four line segments into a Quad.
+            q = item[1]
+            if open_sub:
+                path.append({"cmd": "Z"})
+            path.append({"cmd": "M", "x": norm_x(q.ul.x), "y": norm_y(q.ul.y)})
+            for p in (q.ur, q.lr, q.ll):
+                path.append({"cmd": "L", "x": norm_x(p.x), "y": norm_y(p.y)})
+            path.append({"cmd": "Z"})
+            open_sub = False
+            last = (float(q.ul.x), float(q.ul.y))
 
     if open_sub:
         path.append({"cmd": "Z"})
@@ -283,6 +346,18 @@ def _append_strokes(objects: list, drw: dict):
                             "x2": norm_x(item[2].x), "y2": norm_y(item[2].y),
                             "x3": norm_x(item[3].x), "y3": norm_y(item[3].y),
                             "x4": norm_x(item[4].x), "y4": norm_y(item[4].y), "color": color})
+        elif kind == "qu":
+            # MuPDF folds four consecutive line segments into a Quad — including
+            # DEGENERATE ones, e.g. a stroke that runs back and forth over the same
+            # line. Skipping these silently dropped whole paths (the machine cuts
+            # them, so we must count them). Walking all four corners reproduces the
+            # traversed length exactly.
+            q = item[1]
+            corners = [q.ul, q.ur, q.lr, q.ll, q.ul]
+            for a, b in zip(corners, corners[1:]):
+                objects.append({"type": "l",
+                                "x1": norm_x(a.x), "y1": norm_y(a.y),
+                                "x2": norm_x(b.x), "y2": norm_y(b.y), "color": color})
 
 
 # ── Embedded image extraction ─────────────────────────────────────────────────

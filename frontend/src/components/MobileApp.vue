@@ -53,11 +53,17 @@
       />
     </div>
 
-    <!-- Optimize toggle (same red checkbox as the desktop sidebar) -->
-    <label class="opt-toggle" :title="t('tipOptimize')">
-      <input type="checkbox" v-model="optimize" />
-      <span class="opt-text">{{ t('optimizePath') }}</span>
-    </label>
+    <!-- Path-order algorithm (same selector as the desktop sidebar) -->
+    <div class="m-fields" :title="t('tipOptimize')">
+      <ProfileDropdown
+        :model-value="selectedPathOrder"
+        @update:model-value="selectPathOrder"
+        :items="pathOrderOptions"
+        :placeholder="t('optimizePath')"
+        label-key="name"
+        item-key="id"
+      />
+    </div>
 
     <!-- Combined cleanup (Fix Colors + Remove White + Remove Doubles in one) -->
     <button class="m-clean" :disabled="!hasData || cleaning" @click="cleanAll">
@@ -100,7 +106,8 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { loadProfiles, speedsFor } from '../profiles'
-import { buildToolpath, fixColors, removeWhite, computeDoubleRemoval } from '../toolpath'
+import { buildToolpath, fixColors, removeWhite, computeDoubleRemoval, PATH_ORDER_ALGORITHMS } from '../toolpath'
+import { getStoredViewSettings, setStoredViewSetting } from '../viewSettings'
 import { t } from '../translations'
 import ProfileDropdown from './ProfileDropdown.vue'
 import LanguageSwitcher from './LanguageSwitcher.vue'
@@ -124,7 +131,20 @@ const selectedFamily = ref(null)
 const selectedThickness = ref(null)
 
 const data = ref(null)          // current (edited) extraction objects
-const optimize = ref(true)
+
+// Path-order algorithm — selectable for debugging/comparison, see toolpath.js.
+const PATH_ORDER_LABEL_KEY = { file: 'pathOrderFile', nn: 'pathOrderNn', '2opt': 'pathOrder2opt' }
+const pathOrderOptions = computed(() =>
+  PATH_ORDER_ALGORITHMS.map((id) => ({ id, name: t(PATH_ORDER_LABEL_KEY[id]) })))
+// Shared with the desktop sidebar's storage key, so the choice made on one
+// layout still shows up after switching to the other.
+const selectedPathOrderId = ref(getStoredViewSettings().pathOrder)
+const selectedPathOrder = computed(() =>
+  pathOrderOptions.value.find((o) => o.id === selectedPathOrderId.value))
+const selectPathOrder = (opt) => {
+  selectedPathOrderId.value = opt.id
+  setStoredViewSetting('pathOrder', opt.id)
+}
 
 const hasData = computed(() => Array.isArray(data.value) && data.value.length > 0)
 
@@ -148,7 +168,7 @@ const speedOpts = computed(() =>
 const stats = computed(() => {
   if (!hasData.value || !speedOpts.value) return null
   try {
-    return buildToolpath(data.value, { optimize: optimize.value, ...speedOpts.value }).stats
+    return buildToolpath(data.value, { optimize: selectedPathOrderId.value, ...speedOpts.value }).stats
   } catch (e) {
     console.error('toolpath error:', e)
     return null
@@ -350,22 +370,6 @@ onMounted(async () => {
 
 /* Dropdowns stack */
 .m-fields { display: flex; flex-direction: column; gap: 12px; }
-
-/* Optimize toggle — identical to the desktop sidebar (red checkbox). */
-.opt-toggle {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  background: var(--ctrl-bg);
-  border: 1px solid var(--ctrl-border);
-  border-radius: 8px;
-  cursor: pointer;
-  user-select: none;
-}
-.opt-toggle:hover { background: var(--ctrl-hover); }
-.opt-toggle input { width: 16px; height: 16px; cursor: pointer; accent-color: #DE041F; }
-.opt-text { font-size: 13px; color: var(--text-strong); }
 
 /* Combined cleanup button */
 .m-clean {

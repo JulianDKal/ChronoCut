@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="120.000mm" height="80.000mm" viewBox="0 0 120.000 80.000">
+  <!-- 31_rast_twocol -->
+  <rect x="10.000" y="10.000" width="10.000" height="60.000" fill="#00FF00" stroke="none"/>
+  <rect x="100.000" y="10.000" width="10.000" height="60.000" fill="#00FF00" stroke="none"/>
+</svg>

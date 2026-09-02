@@ -17,6 +17,9 @@ dist-ssr
 !.vscode/extensions.json
 .idea
 .DS_Store
+
+# Office lock files (~$file.xlsx, ~$file.docx, ...)
+~$*
 *.suo
 *.ntvs*
 *.njsproj

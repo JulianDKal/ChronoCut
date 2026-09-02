@@ -66,6 +66,34 @@
         </button>
       </div>
     </div>
+
+    <!-- Curve fidelity: how finely beziers are tessellated for viewing (flyout).
+         Only affects rendering smoothness, not the time estimate. -->
+    <div class="vt-popover">
+      <button
+        class="vt-btn"
+        :class="{ active: state.tessellation !== 'normal' }"
+        aria-haspopup="true"
+        :aria-expanded="tessOpen"
+        @click="toggleMenu('tess')"
+      >
+        <span class="vt-icon" v-html="ICON_TESS"></span>
+        <span class="vt-tip" v-show="!tessOpen">{{ t('curveFidelity') }}</span>
+      </button>
+
+      <div v-if="tessOpen" class="vt-menu">
+        <button
+          v-for="q in tessOptions"
+          :key="q.key"
+          class="vt-item"
+          :class="{ active: state.tessellation === q.key }"
+          @click="setTessellation(q.key)"
+        >
+          <span class="vt-radio"></span>
+          <span>{{ t(q.label) }}</span>
+        </button>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -73,20 +101,19 @@
 import { reactive, ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import eventBus from '../eventBus'
 import { t } from '../translations'
+import { getStoredViewSettings, setStoredViewSetting, TESSELLATION_TOL_BY_KEY } from '../viewSettings'
 
-// Floating view toggles (top-right). State defaults match the ThreeViewer's own
-// defaults, so no initial emit is needed; clicking emits the same events the
-// sidebar used to send.
-const state = reactive({
-  showTravel: true,
-  showRulers: true,
-  rasterMode: 'lines',   // 'lines' | 'block' | 'outline'
-  debugColors: false,
-  speedGradient: false,
-})
+// Floating view toggles (top-right). Restored from localStorage (same pattern
+// as the theme/language toggles) so a reload comes back exactly as left —
+// see viewSettings.js. Every change below is persisted immediately, and the
+// restored values are re-broadcast once on mount (see onMounted at the
+// bottom) so ThreeViewer/App.vue — which only react to these events, they
+// don't read storage themselves — pick up the restored state on first load.
+const state = reactive(getStoredViewSettings())
 
 const debugOpen = ref(false)
 const rasterOpen = ref(false)
+const tessOpen = ref(false)
 const root = ref(null)
 const debugActive  = computed(() => state.debugColors || state.speedGradient)
 const rasterActive = computed(() => state.rasterMode !== 'lines')
@@ -99,6 +126,7 @@ const ICON_TRAVEL = icon('<line x1="3" y1="12" x2="21" y2="12" stroke-dasharray=
 const ICON_RULER  = icon('<rect x="3" y="8" width="18" height="8" rx="1"/><path d="M7 8 v3 M11 8 v4 M15 8 v3 M19 8 v4" stroke-width="1.4"/>')
 const ICON_RASTER = icon('<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 9 h16 M4 13 h16 M4 17 h16" stroke-width="1.4"/>')
 const ICON_DEBUG  = icon('<rect x="8" y="9" width="8" height="10" rx="4"/><path d="M12 9 V19"/><path d="M9 5 l1.5 3 M15 5 l-1.5 3"/><path d="M8 12 H5 M8 16 H6 M16 12 H19 M16 16 H18"/>')
+const ICON_TESS   = icon('<path d="M3 17 Q9 17 9 12 T15 7 T21 7"/>')
 
 const simpleToggles = [
   { key: 'showTravel', label: 'showTravel', event: 'show-travel-changed', icon: ICON_TRAVEL },
@@ -113,19 +141,32 @@ const debugOptions = [
   { key: 'debugColors',   label: 'dbgSegments', event: 'debug-colors-changed' },
   { key: 'speedGradient', label: 'dbgSpeed',    event: 'speed-gradient-changed' },
 ]
+// mm tolerance passed to setTessellationTolerance() — lower = more segments per
+// curve = closer-fitting polyline. 'normal' matches the machine's own precision;
+// the finer levels are for eyeballing small/simple designs up close.
+const tessOptions = [
+  { key: 'normal', label: 'tessNormal', tol: TESSELLATION_TOL_BY_KEY.normal },
+  { key: 'fine',   label: 'tessFine',   tol: TESSELLATION_TOL_BY_KEY.fine },
+  { key: 'ultra',  label: 'tessUltra',  tol: TESSELLATION_TOL_BY_KEY.ultra },
+]
 
-const emit = (key, event) => eventBus.emit(event, state[key])
+const emit = (key, event) => { setStoredViewSetting(key, state[key]); eventBus.emit(event, state[key]) }
 
 // Only one flyout open at a time.
 const toggleMenu = (which) => {
-  if (which === 'raster') { rasterOpen.value = !rasterOpen.value; debugOpen.value = false }
-  else                    { debugOpen.value = !debugOpen.value; rasterOpen.value = false }
+  const next = { raster: false, debug: false, tess: false }
+  const flag = { raster: rasterOpen, debug: debugOpen, tess: tessOpen }
+  next[which] = !flag[which].value
+  rasterOpen.value = next.raster
+  debugOpen.value = next.debug
+  tessOpen.value = next.tess
 }
 
 const toggle = (tg) => {
   state[tg.key] = !state[tg.key]
   debugOpen.value = false
   rasterOpen.value = false
+  tessOpen.value = false
   emit(tg.key, tg.event)
 }
 
@@ -133,6 +174,7 @@ const toggle = (tg) => {
 // turns it off (→ back to normal scan lines).
 const setRaster = (mode) => {
   state.rasterMode = state.rasterMode === mode ? 'lines' : mode
+  setStoredViewSetting('rasterMode', state.rasterMode)
   eventBus.emit('raster-mode-changed', state.rasterMode)
 }
 
@@ -152,11 +194,34 @@ const toggleKey = (key, event) => {
   emit(key, event)
 }
 
-// Close both flyouts on an outside click.
-const onDocClick = (e) => {
-  if (root.value && !root.value.contains(e.target)) { debugOpen.value = false; rasterOpen.value = false }
+// Curve fidelity: passed straight to toolpath.js's tessellation tolerance.
+const setTessellation = (key) => {
+  state.tessellation = key
+  setStoredViewSetting('tessellation', key)
+  const opt = tessOptions.find((o) => o.key === key)
+  eventBus.emit('tessellation-changed', opt.tol)
 }
-onMounted(() => document.addEventListener('click', onDocClick))
+
+// Close all flyouts on an outside click.
+const onDocClick = (e) => {
+  if (root.value && !root.value.contains(e.target)) {
+    debugOpen.value = false; rasterOpen.value = false; tessOpen.value = false
+  }
+}
+onMounted(() => {
+  document.addEventListener('click', onDocClick)
+  // Re-broadcast the restored settings once: ThreeViewer also self-sources
+  // them directly on its own mount (belt-and-suspenders, same reasoning as
+  // theme.js), but App.vue's debug/gradient overlay flags only exist as
+  // event listeners with no storage-reading of their own — this is what
+  // brings THOSE back in sync after a reload.
+  eventBus.emit('show-travel-changed', state.showTravel)
+  eventBus.emit('rulers-changed', state.showRulers)
+  eventBus.emit('raster-mode-changed', state.rasterMode)
+  eventBus.emit('debug-colors-changed', state.debugColors)
+  eventBus.emit('speed-gradient-changed', state.speedGradient)
+  eventBus.emit('tessellation-changed', tessOptions.find((o) => o.key === state.tessellation)?.tol ?? TESSELLATION_TOL_BY_KEY.normal)
+})
 onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 </script>
 

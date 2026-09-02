@@ -5,6 +5,8 @@
 // engrave phase before the cut phase, optionally nearest-neighbour optimise the
 // order within each phase, and insert travel ("Leerwege") moves between paths.
 //
+import { CALIBRATION } from './calibration'
+
 // Geometry is kept as PRIMITIVES — a path is a list of line ('L') and cubic
 // bezier ('C') primitives. Beziers stay beziers all the way through; they are
 // only tessellated (adaptively, by arc length) at render time. Coordinates are
@@ -23,12 +25,22 @@ export const SPEED_MM_S = {
 
 // Raster (boustrophedon engraving) parameters — green and grayscale content is
 // engraved by scanning horizontally back and forth over its bounding box.
-const RASTER_PITCH    = 0.6   // mm between scan lines (vertical step)
-const RASTER_OVERSCAN = 50    // mm of accel/decel space added on each side (5 cm)
-const RASTER_MAX_ROWS = 1200  // safety cap (pitch grows if a region is huge)
+const RASTER_PITCH    = 0.6   // mm between scan lines (vertical step) — fallback only
+// Overscan is NOT a fixed distance: the calibration shows a fixed TIME per scan
+// line (constant across 10/20/40 % speed), so the equivalent distance scales with
+// the raster speed. rasterOverscanFor() derives it; see calibration.js.
+const RASTER_MAX_ROWS = 20000 // safety cap. Was 1200, which silently capped every
+                              // region taller than ~50 mm at 600 dpi (pitch grew,
+                              // rows dropped) and made the estimate far too fast.
 const RASTER_GREEN    = '#00a000'  // colour of green-region scan lines
-const RASTER_GRAY     = '#555555'  // colour of grayscale-image scan lines
-const RASTER_SPLIT_GAP = 20   // mm — green raster groups farther apart than this get their own box
+// Marker colour for grayscale-image (bitmap) scan lines — NOT the actual
+// rendered colour. A fixed hex can't be right in both themes (white vanishes
+// on the light theme's white bed), so the viewer swaps this for a real
+// per-theme colour (white on dark, dark gray on light) at render time. Kept
+// exported so ThreeViewer.vue can recognise it; picked memorably far from any
+// real ink colour so it's never confused with genuine content.
+export const RASTER_BITMAP_MARK = '#fffffe'
+const RASTER_GRAY = RASTER_BITMAP_MARK
 
 // Hand-removal heuristic: every closed cut contour is a part that must be picked
 // out by hand, so what drives the extra handling time is the COUNT, not the size.
@@ -41,7 +53,7 @@ const SMALL_PART_MM = 1e6
 const TINY_PART_W = 15   // mm — larger side
 const TINY_PART_H = 8    // mm — shorter side
 
-const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y)
+export const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y)
 
 // Time (s) to traverse a path of length L at target speed v (mm/s) with finite
 // acceleration a (mm/s²), assuming the head starts and ends at rest. With a<=0
@@ -59,7 +71,37 @@ export function rampedTime(L, v, a) {
 // head to a full stop — the velocity profile restarts from rest. Catches raster
 // turnarounds (180°) and the vertical step between scan rows (90°), which is
 // exactly where a real machine decelerates, stops and reverses.
-const CORNER_COS = Math.cos((60 * Math.PI) / 180)   // > 60° turn ⇒ stop
+//
+// MEASURED (see calibration.js): the threshold is ~20°, not 60°. A 12-sided
+// polygon (30° corners) is charged full corner cost by the machine, a 48-gon
+// (7.5°) is not. At 60° the 30°–43° corners were silently free.
+const CORNER_COS = Math.cos((CALIBRATION.cornerAngleDeg * Math.PI) / 180)
+
+// Extra time (s) per full stop, on top of the kinematic v/a ramp. Applied at
+// every interior corner of a run.
+const CORNER_PENALTY = CALIBRATION.cornerPenalty
+
+// Raster and vector run on DIFFERENT acceleration regimes: the calibrated raster
+// line overhead already contains the whole turnaround, so raster scan lines are
+// modelled at constant speed (a = 0) to avoid charging the ramp twice.
+export const accelFor = (m, accel) => (m.category === 'raster' ? 0 : accel)
+
+// Same reasoning for the per-stop penalty: a scan row's turnaround is already
+// paid for inside rasterLineOverhead, so charging CORNER_PENALTY again at each
+// row end (2 per row) would double-count it — worth ~75 s on an 80 mm tall
+// region at 600 dpi.
+export const cornerPenaltyFor = (m) => (m.category === 'raster' ? 0 : CORNER_PENALTY)
+
+// Fixed cost of starting a new vector, charged on the travel that precedes it.
+export const moveExtraTime = (m) => (m.kind === 'travel' ? CALIBRATION.vectorStartPenalty : 0)
+
+// Half the per-line overhead expressed as distance, so a scan row of content
+// width `span` costs span/v + rasterLineOverhead + yFeed*pitch, exactly matching
+// the calibration, while the emitted geometry stays consistent with the timing.
+function rasterOverscanFor(speed, pitch) {
+  const perLine = CALIBRATION.rasterLineOverhead + CALIBRATION.rasterYFeed * pitch
+  return (perLine * speed) / 2
+}
 
 // Speed (mm/s) at distance s along a run of length S that starts and ends at
 // rest, with target speed v and acceleration a (trapezoid, or triangle when the
@@ -119,7 +161,7 @@ export function movePolyline(m) {
  * @returns {{ durs:number[], speeds:number[], total:number }}
  *   durs[i] / speeds[i] = duration (s) and average speed (mm/s) of segment i.
  */
-export function rampSegments(points, v, a) {
+export function rampSegments(points, v, a, cornerPenalty = CORNER_PENALTY) {
   const n = points.length - 1
   if (n <= 0) return { durs: [], speeds: [], total: 0 }
   const segs = []
@@ -149,7 +191,9 @@ export function rampSegments(points, v, a) {
     for (let k = rs; k < re; k++) {
       const s1 = s0 + segs[k].L
       const { dt, vavg } = profileSeg(s0, s1, S, v, a)
-      durs[k] = dt; speeds[k] = vavg; total += dt
+      // Charge the stop that STARTS this run (every run but the first).
+      const pen = (k === rs && rs > 0) ? cornerPenalty : 0
+      durs[k] = dt + pen; speeds[k] = vavg; total += dt + pen
       s0 = s1
     }
     rs = re
@@ -169,7 +213,7 @@ export function rampSegments(points, v, a) {
  *   dur         duration (s) of the segment under the acceleration profile
  *   runStartRel time (s) at the run's start, relative to the polyline start
  */
-export function annotateRuns(points, v, a) {
+export function annotateRuns(points, v, a, cornerPenalty = CORNER_PENALTY) {
   const n = points.length - 1
   const out = []
   if (n <= 0) return out
@@ -195,6 +239,7 @@ export function annotateRuns(points, v, a) {
     while (re < n && !stop[re]) re++          // run = segments [rs, re)
     let S = 0
     for (let k = rs; k < re; k++) S += segL[k]
+    cumTime += (rs > 0 ? cornerPenalty : 0)   // stop that starts this run
     const runStartRel = cumTime
     let s0 = 0
     for (let k = rs; k < re; k++) {
@@ -267,17 +312,32 @@ export function fixColors(data) {
   })
 }
 
-// ── Remove Doubles (smart overlap removal) ────────────────────────────────────
-// Detects red/blue stroke segments lying on top of one another — including
-// PARTIAL overlaps — and removes the redundant coverage. Blue (cut) wins over
-// red (engrave): wherever red overlaps blue, the red part is dropped because the
-// cut already removes that material there. Returns { data, removed }:
-//   data    — new object list with the redundant coverage gone
-//   removed — line segments [{x1,y1,x2,y2}] that were removed (for highlighting)
+// ── Remove Doubles (overlap removal) ──────────────────────────────────────────
+// Removes redundant coverage where strokes lie on top of one another:
+//   • same colour, exactly or partially on top → keep ONE copy
+//   • red on top of blue                       → the red part goes (the cut
+//                                                 already removes that material)
+// Works on the REAL geometry: straight segments stay segments and beziers stay
+// beziers (trimmed with de Casteljau), so nothing is degraded to the polyline
+// the viewer happens to draw.
+//
+// Two properties matter and are guaranteed by construction:
+//   1. A primitive that survives untouched is emitted from its OWN coordinates,
+//      never rebuilt from a group average — so unaffected geometry is bit-identical
+//      and closed contours keep closing.
+//   2. Grouping compares every member against a fixed group REPRESENTATIVE, not
+//      against its neighbour. Neighbour-chaining used to let hundreds of lines at
+//      wildly different angles collapse into one "collinear" group.
+//
+// Returns { data, removed } — removed carries the dropped pieces as line segments
+// for the viewer's highlight.
 
-const OVERLAP_EPS = 0.02   // mm — ignore sub-epsilon slivers
+const OVERLAP_EPS = 0.02    // mm — ignore sub-epsilon slivers
+const ANGLE_TOL   = 0.012   // rad ≈ 0.7° — max tilt against the group representative
+const C_TOL       = 0.08    // mm — max perpendicular distance from the representative
+const CURVE_TOL   = 0.05    // mm — how close two beziers must run to count as one
 
-// ── 1D interval helpers (along a line) ────────────────────────────────────────
+// ── 1D interval helpers ───────────────────────────────────────────────────────
 function mergeIv(list) {
   if (list.length === 0) return []
   const s = list.map(x => x.slice()).sort((a, b) => a[0] - b[0])
@@ -289,196 +349,322 @@ function mergeIv(list) {
   }
   return out
 }
-function subtractIv(A, B) {            // A, B merged → A minus B
+function subtractIv(A, B) {            // A minus B (both merged)
   let segs = A.map(x => x.slice())
   for (const [b0, b1] of B) {
     const next = []
     for (const [a0, a1] of segs) {
-      if (b1 <= a0 || b0 >= a1) { next.push([a0, a1]); continue }   // disjoint
+      if (b1 <= a0 || b0 >= a1) { next.push([a0, a1]); continue }
       if (b0 > a0) next.push([a0, b0])
       if (b1 < a1) next.push([b1, a1])
     }
     segs = next
   }
-  return segs.filter(([s, e]) => e - s > OVERLAP_EPS)
-}
-function intersectIv(A, B) {
-  const out = []
-  for (const [a0, a1] of A) for (const [b0, b1] of B) {
-    const s = Math.max(a0, b0), e = Math.min(a1, b1)
-    if (e - s > OVERLAP_EPS) out.push([s, e])
-  }
-  return mergeIv(out)
-}
-function doubledIv(list) {             // regions covered by ≥2 of the raw intervals
-  const ev = []
-  for (const [s, e] of list) { ev.push([s, 1]); ev.push([e, -1]) }
-  ev.sort((a, b) => a[0] - b[0] || a[1] - b[1])
-  const out = []; let cov = 0, start = 0
-  for (const [x, d] of ev) {
-    const prev = cov; cov += d
-    if (prev < 2 && cov >= 2) start = x
-    else if (prev >= 2 && cov < 2 && x - start > OVERLAP_EPS) out.push([start, x])
-  }
-  return out
+  return segs
 }
 
-// Cluster line segments that lie on the same infinite line, robustly. Hard
-// quantisation buckets split collinear lines that straddle a grid boundary
-// (a common cause of "partial overlap not detected"); instead we cluster by
-// ADJACENCY — first by undirected angle, then by perpendicular offset — so
-// near-identical lines always end up together.
-//
-// Each returned group has: a representative direction u=(ux,uy), normal
-// n=(nx,ny), offset c, and the blue/red interval lists along the line. A point
-// at parameter t reconstructs as  t*u + c*n.
-const ANGLE_TOL = 0.012   // rad ≈ 0.7°
-const C_TOL     = 0.08    // mm perpendicular distance
+// ── Grouping of collinear straight segments ───────────────────────────────────
+// Spatial hash on (angle, perpendicular offset). Membership is decided against
+// the group's representative, which bounds a group's spread to the tolerance.
+const angDist = (a, b) => { const d = Math.abs(a - b); return Math.min(d, Math.PI - d) }
 
-function clusterLines(segs) {
-  const items = segs.map(s => {
-    let a = Math.atan2(s.y2 - s.y1, s.x2 - s.x1)   // undirected angle in [0, π)
+function groupCollinear(segs) {
+  const groups = []
+  const index = new Map()                       // bucket -> group indices
+  for (const s of segs) {
+    let a = Math.atan2(s.y2 - s.y1, s.x2 - s.x1)
     if (a < 0) a += Math.PI
     if (a >= Math.PI) a -= Math.PI
-    return { s, a }
-  })
-  items.sort((p, q) => p.a - q.a)
+    const mx = (s.x1 + s.x2) / 2, my = (s.y1 + s.y2) / 2
+    // Bucket with a canonical (group-independent) normal so the hash is stable.
+    const ka = Math.round(a / ANGLE_TOL)
+    const ca = ka * ANGLE_TOL
+    const cOf = (ang, x, y) => -Math.sin(ang) * x + Math.cos(ang) * y
+    const kc = Math.round(cOf(ca, mx, my) / C_TOL)
 
-  // 1) cluster by angle (adjacency)
-  const angClusters = []
-  let cur = []
-  for (const it of items) {
-    if (cur.length && it.a - cur[cur.length - 1].a > ANGLE_TOL) { angClusters.push(cur); cur = [] }
-    cur.push(it)
-  }
-  if (cur.length) angClusters.push(cur)
-  // merge near-horizontal lines split across the 0 / π wrap
-  if (angClusters.length > 1) {
-    const first = angClusters[0], last = angClusters[angClusters.length - 1]
-    if (first[0].a <= ANGLE_TOL && Math.PI - last[last.length - 1].a <= ANGLE_TOL) {
-      angClusters[0] = last.concat(first)
-      angClusters.pop()
-    }
-  }
-
-  const groups = []
-  for (const cl of angClusters) {
-    // representative direction via doubled-angle averaging (no up/down ambiguity)
-    let s2 = 0, c2 = 0
-    for (const it of cl) { s2 += Math.sin(2 * it.a); c2 += Math.cos(2 * it.a) }
-    const arep = Math.atan2(s2, c2) / 2
-    const ux = Math.cos(arep), uy = Math.sin(arep)
-    const nx = -uy, ny = ux
-    const arr = cl.map(it => {
-      const s = it.s
-      const ta = ux * s.x1 + uy * s.y1, tb = ux * s.x2 + uy * s.y2
-      return { s, c: nx * s.x1 + ny * s.y1, iv: [Math.min(ta, tb), Math.max(ta, tb)] }
-    })
-    arr.sort((p, q) => p.c - q.c)
-    // 2) sub-cluster by perpendicular offset
-    let sub = []
-    const flush = () => {
-      if (!sub.length) return
-      const g = { ux, uy, nx, ny, c: 0, blue: [], red: [], blueColor: null, redColor: null }
-      let cSum = 0
-      for (const e of sub) {
-        cSum += e.c
-        if (e.s.cat === 'blue') { g.blue.push(e.iv); g.blueColor ??= e.s.color }
-        else                    { g.red.push(e.iv);  g.redColor  ??= e.s.color }
+    let g = null
+    outer:
+    for (let da = -1; da <= 1 && !g; da++) {
+      for (let dc = -1; dc <= 1; dc++) {
+        const list = index.get(`${ka + da}|${kc + dc}`)
+        if (!list) continue
+        for (const gi of list) {
+          const cand = groups[gi]
+          if (angDist(a, cand.a) > ANGLE_TOL) continue
+          if (Math.abs(cOf(cand.a, mx, my) - cand.c) > C_TOL) continue
+          g = cand
+          break outer
+        }
       }
-      g.c = cSum / sub.length
+    }
+    if (!g) {
+      g = { a, c: cOf(a, mx, my), ux: Math.cos(a), uy: Math.sin(a), items: [] }
       groups.push(g)
-      sub = []
+      const key = `${ka}|${kc}`
+      if (!index.has(key)) index.set(key, [])
+      index.get(key).push(groups.length - 1)
     }
-    for (const e of arr) {
-      if (sub.length && e.c - sub[sub.length - 1].c > C_TOL) flush()
-      sub.push(e)
-    }
-    flush()
+    // Project onto the group's axis; keep the ORIGINAL endpoints for emitting.
+    const t1 = g.ux * s.x1 + g.uy * s.y1
+    const t2 = g.ux * s.x2 + g.uy * s.y2
+    g.items.push({ s, lo: Math.min(t1, t2), hi: Math.max(t1, t2), flip: t2 < t1 })
   }
   return groups
 }
 
-function curveGeom(o) {
-  const q = (v) => Math.round(v / 0.05)
-  const fwd = [o.x1, o.y1, o.x2, o.y2, o.x3, o.y3, o.x4, o.y4].map(q).join(',')
-  const rev = [o.x4, o.y4, o.x3, o.y3, o.x2, o.y2, o.x1, o.y1].map(q).join(',')
-  return fwd < rev ? fwd : rev
+// ── Bezier helpers ────────────────────────────────────────────────────────────
+const lerpP = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t })
+
+function bezSplitRight(p, t) {                  // control points of [t,1]
+  const a = lerpP(p[0], p[1], t), b = lerpP(p[1], p[2], t), c = lerpP(p[2], p[3], t)
+  const d = lerpP(a, b, t), e = lerpP(b, c, t)
+  return [lerpP(d, e, t), e, c, p[3]]
 }
-function curveSegs(o) {
-  const pts = flattenPrim({ t: 'C', p0: { x: o.x1, y: o.y1 }, p1: { x: o.x2, y: o.y2 },
-                            p2: { x: o.x3, y: o.y3 }, p3: { x: o.x4, y: o.y4 } })
-  const segs = []
-  for (let i = 0; i < pts.length - 1; i++) {
-    segs.push({ x1: pts[i].x, y1: pts[i].y, x2: pts[i + 1].x, y2: pts[i + 1].y })
+function bezSplitLeft(p, t) {                   // control points of [0,t]
+  const a = lerpP(p[0], p[1], t), b = lerpP(p[1], p[2], t), c = lerpP(p[2], p[3], t)
+  const d = lerpP(a, b, t), e = lerpP(b, c, t)
+  return [p[0], a, d, lerpP(d, e, t)]
+}
+function bezSub(p, t0, t1) {                    // sub-curve on [t0,t1]
+  if (t1 - t0 <= 1e-9) return null
+  const q = t0 > 1e-9 ? bezSplitRight(p, t0) : p
+  const tt = t0 > 1e-9 ? (t1 - t0) / (1 - t0) : t1
+  return tt < 1 - 1e-9 ? bezSplitLeft(q, tt) : q
+}
+const bezAt = (p, t) => cubicAt({ p0: p[0], p1: p[1], p2: p[2], p3: p[3] }, t)
+
+// Parameter on `p` closest to `pt`: coarse scan, then a short bisection refine.
+function nearestT(p, pt) {
+  let bt = 0, bd = Infinity
+  for (let i = 0; i <= 48; i++) {
+    const t = i / 48, q = bezAt(p, t)
+    const d = (q.x - pt.x) ** 2 + (q.y - pt.y) ** 2
+    if (d < bd) { bd = d; bt = t }
   }
-  return segs
+  let step = 1 / 48
+  for (let k = 0; k < 24; k++) {
+    step /= 2
+    for (const t of [bt - step, bt + step]) {
+      if (t < 0 || t > 1) continue
+      const q = bezAt(p, t)
+      const d = (q.x - pt.x) ** 2 + (q.y - pt.y) ** 2
+      if (d < bd) { bd = d; bt = t }
+    }
+  }
+  return { t: bt, dist: Math.sqrt(bd) }
+}
+
+// Unit tangent of `p` at parameter `t` (finite difference — plenty accurate at
+// the mm scale these curves live at).
+function tangentAt(p, t, h = 1e-3) {
+  const t0 = Math.max(0, t - h), t1 = Math.min(1, t + h)
+  if (t1 - t0 < 1e-9) return { x: 0, y: 0 }
+  const a = bezAt(p, t0), b = bezAt(p, t1)
+  const dx = b.x - a.x, dy = b.y - a.y
+  const len = Math.hypot(dx, dy)
+  return len > 1e-9 ? { x: dx / len, y: dy / len } : { x: 0, y: 0 }
+}
+// Two curves running near-parallel within CROSS_ANGLE_TOL of each other (in
+// either direction — a retraced sub-curve may be reversed) at their closest
+// point. Below this, a match is a genuine crossing, not shared geometry.
+const CROSS_ANGLE_COS = Math.cos((20 * Math.PI) / 180)   // 20°
+
+// Which parameter ranges of `cp` run along `other`?
+//
+// Sampling beats trying to solve for an affine parameter mapping: it covers full
+// containment AND partial overlap, in either direction, and needs no assumption
+// about how the two curves were split. Position alone isn't enough, though: two
+// DIFFERENT curves that cross (e.g. two circles offset by less than CURVE_TOL at
+// their nearest point, like intentionally overlapping rings) can dip within
+// tolerance over a real arc near the crossing, not just a single point — so a
+// match also requires the TANGENT directions to be parallel (or antiparallel).
+// A transversal crossing has clearly different tangents and is correctly
+// rejected; a genuinely shared/retraced curve has matching tangents throughout.
+function onOther(cp, other, t) {
+  const p = bezAt(cp, t)
+  const { t: u, dist } = nearestT(other, p)
+  if (dist > CURVE_TOL) return false
+  const ta = tangentAt(cp, t), tb = tangentAt(other, u)
+  const dot = ta.x * tb.x + ta.y * tb.y
+  return Math.abs(dot) >= CROSS_ANGLE_COS
+}
+
+function refineBoundary(cp, other, tOff, tOn) {   // bisect towards the "on" side
+  for (let k = 0; k < 18; k++) {
+    const m = (tOff + tOn) / 2
+    if (onOther(cp, other, m)) tOn = m; else tOff = m
+  }
+  return tOn
+}
+
+// A genuine shared/duplicate arc is always ANCHORED at one of cp's own
+// endpoints: real duplicates come from copying a whole curve, or splitting a
+// path and duplicating a piece — either way, the shared range starts where cp
+// starts or ends where cp ends (verified against both passing overlap tests
+// below). A match that sits entirely in cp's INTERIOR, touching neither end,
+// is a coincidence, not shared geometry — and coincidences do happen: two
+// circles offset by a small fraction of their radius cross at a shallow angle
+// (this pair crosses at ~3°), so position AND tangent direction both stay
+// within tolerance for a real stretch near each crossing even though the
+// circles are genuinely different. Discarding interior-only matches is what
+// tells the two situations apart; tightening CURVE_TOL can't, since at the
+// exact crossing point the gap is mathematically zero regardless of tolerance.
+//
+// "Anchored" is measured as physical distance (mm) from cp's own start/end
+// POINT, not parameter distance — a parameter epsilon doesn't scale with the
+// curve's real length (a tiny parameter slice of a large arc is still several
+// hundredths of a mm, which is exactly the scale a false crossing sits at).
+const ANCHOR_MM = OVERLAP_EPS   // same "negligible" scale used for line slivers
+
+// Endpoint-anchoring alone still lets one thing through: two ADJACENT curve
+// primitives of the very same shape (e.g. a circle built from 4 quarter-arc
+// beziers) share an exact point by construction, and are typically drawn G1-
+// continuous there (matching tangents), so the same shallow-angle situation
+// happens again — briefly, right at that shared joint — even though nothing
+// is actually redundant (the two arcs just meet, they don't overlap). A real
+// duplicate/retraced arc runs alongside the other curve for a substantial
+// stretch; a joint's false match dies out within a fraction of a mm. Requiring
+// a minimum matched length throws out the joint artefact while comfortably
+// clearing every genuine case above (tens of mm in this file's real content).
+const MIN_MATCH_MM = 0.15
+
+function arcLen(cp, t0, t1, steps = 8) {
+  let len = 0, prev = bezAt(cp, t0)
+  for (let i = 1; i <= steps; i++) {
+    const p = bezAt(cp, t0 + (t1 - t0) * (i / steps))
+    len += Math.hypot(p.x - prev.x, p.y - prev.y)
+    prev = p
+  }
+  return len
+}
+
+function coveredRanges(cp, other) {
+  const N = 64
+  const flag = []
+  for (let i = 0; i <= N; i++) flag.push(onOther(cp, other, i / N))
+  const out = []
+  let s = null
+  for (let i = 0; i <= N; i++) {
+    const on = flag[i]
+    if (on && s === null) s = i
+    if ((!on || i === N) && s !== null) {
+      const e = on ? i : i - 1
+      let lo = s / N, hi = e / N
+      if (s > 0) lo = refineBoundary(cp, other, (s - 1) / N, s / N)
+      if (e < N) hi = refineBoundary(cp, other, (e + 1) / N, e / N)
+      const dLo = Math.hypot(bezAt(cp, lo).x - cp[0].x, bezAt(cp, lo).y - cp[0].y)
+      const dHi = Math.hypot(bezAt(cp, hi).x - cp[3].x, bezAt(cp, hi).y - cp[3].y)
+      const anchored = dLo <= ANCHOR_MM || dHi <= ANCHOR_MM
+      if (hi - lo > 1e-6 && anchored && arcLen(cp, lo, hi) >= MIN_MATCH_MM) out.push([lo, hi])
+      s = null
+    }
+  }
+  return out
+}
+
+const bboxOf = (p) => ({
+  x0: Math.min(p[0].x, p[1].x, p[2].x, p[3].x), x1: Math.max(p[0].x, p[1].x, p[2].x, p[3].x),
+  y0: Math.min(p[0].y, p[1].y, p[2].y, p[3].y), y1: Math.max(p[0].y, p[1].y, p[2].y, p[3].y),
+})
+const bboxHit = (a, b, tol) =>
+  a.x0 - tol <= b.x1 && b.x0 - tol <= a.x1 && a.y0 - tol <= b.y1 && b.y0 - tol <= a.y1
+
+function curveToSegs(p, sink) {
+  const pts = flattenPrim({ t: 'C', p0: p[0], p1: p[1], p2: p[2], p3: p[3] })
+  for (let i = 0; i < pts.length - 1; i++)
+    sink.push({ x1: pts[i].x, y1: pts[i].y, x2: pts[i + 1].x, y2: pts[i + 1].y })
 }
 
 /**
- * Smart double removal. See header above.
+ * Remove doubled / overlapping coverage. See header above.
  * @returns {{ data: Array, removed: Array<{x1,y1,x2,y2}> }}
  */
 export function computeDoubleRemoval(data) {
-  const out = []        // resulting objects (kept geometry)
-  const removed = []    // removed pieces, as line segments (for highlight)
+  const out = []        // survivors, in the input's order where possible
+  const removed = []    // dropped pieces, as segments for the highlight
 
-  // ── Lines: cluster red/blue 'l' segments onto shared infinite lines ───────
-  const segs = []
+  // Blue is processed before red so red always loses against a cut; within one
+  // colour the first occurrence in the file wins.
+  const rank = (o) => (categorize(o.color || '#000000') === 'blue' ? 0 : 1)
+  const lines = [], curves = []
   for (const o of data) {
-    let cat
-    if (o.type === 'l' && ((cat = categorize(o.color || '#000000')) === 'red' || cat === 'blue')) {
-      if (Math.hypot(o.x2 - o.x1, o.y2 - o.y1) < 1e-9) continue   // zero-length → drop
-      segs.push({ cat, color: o.color, x1: o.x1, y1: o.y1, x2: o.x2, y2: o.y2 })
+    const cat = (o.type === 'l' || o.type === 'c') ? categorize(o.color || '#000000') : null
+    if (o.type === 'l' && (cat === 'red' || cat === 'blue')) {
+      if (Math.hypot(o.x2 - o.x1, o.y2 - o.y1) < 1e-9) continue     // zero length → drop
+      lines.push(o)
+    } else if (o.type === 'c' && (cat === 'red' || cat === 'blue')) {
+      curves.push(o)
     } else {
-      out.push(o)                             // non red/blue lines pass straight through
+      out.push(o)                                                    // untouched
     }
   }
+  lines.sort((a, b) => rank(a) - rank(b))
+  curves.sort((a, b) => rank(a) - rank(b))
 
-  const ptOf = (g, t) => ({ x: t * g.ux + g.c * g.nx, y: t * g.uy + g.c * g.ny })
-  const emit = (g, ivls, color, sink) => {
-    for (const [t0, t1] of ivls) {
-      if (t1 - t0 <= OVERLAP_EPS) continue
-      const a = ptOf(g, t0), b = ptOf(g, t1)
-      if (sink === 'removed') removed.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y })
-      else out.push({ type: 'l', x1: a.x, y1: a.y, x2: b.x, y2: b.y, color })
-    }
-  }
-
-  for (const g of clusterLines(segs)) {
-    const blueU = mergeIv(g.blue)
-    const redU  = mergeIv(g.red)
-    const outRed = subtractIv(redU, blueU)          // red minus blue coverage
-    emit(g, blueU,  g.blueColor || '#0000ff', 'out')
-    emit(g, outRed, g.redColor  || '#ff0000', 'out')
-    // Highlight what disappeared: blue self-overlap, plus red-under-blue and red self-overlap.
-    emit(g, doubledIv(g.blue), g.blueColor, 'removed')
-    const redKilled = mergeIv([...intersectIv(redU, blueU), ...doubledIv(g.red)])
-    emit(g, redKilled, g.redColor, 'removed')
-  }
-
-  // ── Curves: exact-duplicate removal (+ red curve under an identical blue) ──
-  const blueCurveGeom = new Set()
-  for (const o of out) {
-    if (o.type === 'c' && categorize(o.color || '#000000') === 'blue') blueCurveGeom.add(curveGeom(o))
-  }
-  const keptCurve = new Set()
-  const finalOut = []
-  for (const o of out) {
-    if (o.type === 'c') {
-      const cat = categorize(o.color || '#000000')
-      if (cat === 'red' || cat === 'blue') {
-        const g = curveGeom(o)
-        const drop = (cat === 'red' && blueCurveGeom.has(g)) || keptCurve.has(`${cat}:${g}`)
-        if (drop) { for (const s of curveSegs(o)) removed.push(s); continue }
-        keptCurve.add(`${cat}:${g}`)
+  // ── Straight segments ───────────────────────────────────────────────────────
+  const segView = lines.map(o => ({ x1: o.x1, y1: o.y1, x2: o.x2, y2: o.y2, o }))
+  for (const g of groupCollinear(segView)) {
+    let covered = []                                   // what earlier members took
+    for (const it of g.items) {
+      const o = it.s.o
+      const keep = subtractIv([[it.lo, it.hi]], covered)
+      covered = mergeIv([...covered, [it.lo, it.hi]])
+      const span = it.hi - it.lo
+      // Emit surviving pieces from the ORIGINAL endpoints (never from group means).
+      const A = { x: o.x1, y: o.y1 }, B = { x: o.x2, y: o.y2 }
+      const at = (t) => {
+        const f = it.flip ? (it.hi - t) / span : (t - it.lo) / span
+        return lerpP(A, B, f)
+      }
+      const emit = (ivs, sink) => {
+        for (const [t0, t1] of ivs) {
+          if (t1 - t0 <= OVERLAP_EPS) continue
+          const p = at(t0), q = at(t1)
+          if (sink === 'out') out.push({ ...o, x1: p.x, y1: p.y, x2: q.x, y2: q.y })
+          else removed.push({ x1: p.x, y1: p.y, x2: q.x, y2: q.y })
+        }
+      }
+      if (keep.length === 1 && keep[0][0] === it.lo && keep[0][1] === it.hi) {
+        out.push(o)                                    // untouched → byte-identical
+      } else {
+        emit(keep, 'out')
+        emit(subtractIv([[it.lo, it.hi]], keep), 'removed')
       }
     }
-    finalOut.push(o)
+  }
+
+  // ── Bezier curves ───────────────────────────────────────────────────────────
+  const kept = []                                      // {cp, bbox} already placed
+  for (const o of curves) {
+    const cp = [{ x: o.x1, y: o.y1 }, { x: o.x2, y: o.y2 },
+                { x: o.x3, y: o.y3 }, { x: o.x4, y: o.y4 }]
+    const bb = bboxOf(cp)
+    let ranges = [[0, 1]]                              // still-alive part of THIS curve
+    for (const k of kept) {
+      if (!bboxHit(bb, k.bbox, CURVE_TOL)) continue
+      for (const cov of coveredRanges(cp, k.cp)) ranges = subtractIv(ranges, [cov])
+      if (ranges.length === 0) break
+    }
+    const full = ranges.length === 1 && ranges[0][0] <= 1e-9 && ranges[0][1] >= 1 - 1e-9
+    if (full) {
+      out.push(o)
+      kept.push({ cp, bbox: bb })
+      continue
+    }
+    for (const [t0, t1] of subtractIv([[0, 1]], ranges)) curveToSegs(bezSub(cp, t0, t1) || cp, removed)
+    for (const [t0, t1] of ranges) {
+      const sub = bezSub(cp, t0, t1)
+      if (!sub) continue
+      const len = Math.hypot(sub[3].x - sub[0].x, sub[3].y - sub[0].y)
+      if (len <= OVERLAP_EPS) continue
+      out.push({ ...o, x1: sub[0].x, y1: sub[0].y, x2: sub[1].x, y2: sub[1].y,
+                       x3: sub[2].x, y3: sub[2].y, x4: sub[3].x, y4: sub[3].y })
+      kept.push({ cp: sub, bbox: bboxOf(sub) })
+    }
   }
 
   return {
-    data: finalOut,
+    data: out,
     removed: removed.filter(s => Math.hypot(s.x2 - s.x1, s.y2 - s.y1) > OVERLAP_EPS),
   }
 }
@@ -670,6 +856,17 @@ function subdivideCubic(p0, p1, p2, p3, tol, depth, out) {
   subdivideCubic(m, p123, p23, p3, tol, depth - 1, out)
 }
 
+// Adaptive bezier flatness tolerance (mm) — how far a chord may bend away from
+// the true curve before it gets subdivided again. Lower = more segments = a
+// closer-fitting (and heavier) polyline. Exposed via setTessellationTolerance()
+// so the UI can trade fidelity for performance on simple files; every call to
+// flattenPrim() that doesn't pass its own `tol` picks up the current value.
+let TESSELLATION_TOL = 0.2
+export function getTessellationTolerance() { return TESSELLATION_TOL }
+export function setTessellationTolerance(mm) {
+  TESSELLATION_TOL = Math.max(0.005, Math.min(1, Number(mm) || 0.2))
+}
+
 /**
  * Tessellate a primitive into a polyline using ADAPTIVE (flatness-based)
  * subdivision: a cubic is split only where it bends away from a straight chord
@@ -678,7 +875,7 @@ function subdivideCubic(p0, p1, p2, p3, tol, depth, out) {
  *
  * @returns {Array<{x,y}>} points including both endpoints (line → 2 points)
  */
-export function flattenPrim(p, tol = 0.2, maxDepth = 8) {
+export function flattenPrim(p, tol = TESSELLATION_TOL, maxDepth = 8) {
   if (p.t === 'L') return [p.a, p.b]
   const out = [p.p0]
   subdivideCubic(p.p0, p.p1, p.p2, p.p3, tol, maxDepth, out)
@@ -817,97 +1014,212 @@ function bboxOfPaths(paths) {
   return box && isFinite(box.minX) ? box : null
 }
 
-// Bounding box of a filled-path (fp) entry, from its M/L/C command coordinates.
-function bboxOfFpPath(path, box = null) {
-  for (const c of path) {
-    if ('x'  in c) box = growBox(box, [{ x: c.x,  y: c.y  }])
-    if ('x1' in c) box = growBox(box, [{ x: c.x1, y: c.y1 }])
-    if ('x2' in c) box = growBox(box, [{ x: c.x2, y: c.y2 }])
-  }
-  return box
-}
-
-// Single-linkage cluster a list of bounding boxes: boxes whose nearest gap is
-// <= `gap` end up in the same cluster; clusters farther apart than `gap` stay
-// separate. Returns one merged bbox per cluster. Chains count (A near B, B near C
-// → one cluster) so contiguous content stays together but a real empty band splits.
-function clusterBoxes(boxes, gap) {
-  const n = boxes.length
-  if (n <= 1) return boxes.slice()
-  const parent = Array.from({ length: n }, (_, i) => i)
-  const find = (i) => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i] } return i }
-  const near = (a, b) => {
-    const gx = Math.max(b.minX - a.maxX, a.minX - b.maxX, 0)
-    const gy = Math.max(b.minY - a.maxY, a.minY - b.maxY, 0)
-    return Math.hypot(gx, gy) <= gap
-  }
-  for (let i = 0; i < n; i++) {
-    for (let j = i + 1; j < n; j++) {
-      if (find(i) !== find(j) && near(boxes[i], boxes[j])) parent[find(i)] = find(j)
-    }
-  }
-  const merged = new Map()
-  for (let i = 0; i < n; i++) {
-    const r = find(i), b = boxes[i], m = merged.get(r)
-    if (m) {
-      m.minX = Math.min(m.minX, b.minX); m.minY = Math.min(m.minY, b.minY)
-      m.maxX = Math.max(m.maxX, b.maxX); m.maxY = Math.max(m.maxY, b.maxY)
-    } else merged.set(r, { ...b })
-  }
-  return [...merged.values()]
-}
-
 // Bounding box of a raster image entry (top-left corner at x,y; extends right
 // and downward, where down is negative y).
 function bboxOfImage(img) {
   return { minX: img.x, maxX: img.x + img.w, maxY: img.y, minY: img.y - img.h }
 }
 
+// Split a filled-path command list into closed point loops (beziers flattened).
+function fpLoops(path) {
+  const loops = []
+  let cur = [], sx = 0, sy = 0, cx = 0, cy = 0
+  for (const c of path) {
+    if (c.cmd === 'M') {
+      if (cur.length > 1) loops.push(cur)
+      cur = [{ x: c.x, y: c.y }]; sx = cx = c.x; sy = cy = c.y
+    } else if (c.cmd === 'L') {
+      cur.push({ x: c.x, y: c.y }); cx = c.x; cy = c.y
+    } else if (c.cmd === 'C') {
+      const pp = flattenPrim({ t: 'C', p0: { x: cx, y: cy }, p1: { x: c.x1, y: c.y1 },
+                               p2: { x: c.x2, y: c.y2 }, p3: { x: c.x, y: c.y } })
+      cur.push(...pp.slice(1)); cx = c.x; cy = c.y
+    } else if (c.cmd === 'Z') {
+      cur.push({ x: sx, y: sy }); loops.push(cur); cur = []; cx = sx; cy = sy
+    }
+  }
+  if (cur.length > 1) loops.push(cur)
+  return loops
+}
+
 /**
- * Generate a horizontal back-and-forth (boustrophedon) raster path filling a
- * bounding box, with overscan margins on each side for accel/decel. Emitted as
- * one continuous engrave move (serpentine) preceded by a travel to its start.
+ * Per-scan-row spans of the raster content.
+ *
+ * MEASURED behaviour (calibration files 30–32): the head sweeps, for each scan
+ * row, from the LEFTMOST to the RIGHTMOST ink IN THAT ROW.
+ *   • frame with a hollow centre → full width every row (the empty middle is
+ *     crossed, because there is ink on both sides)
+ *   • two columns 80 mm apart    → full width (the gap is crossed)
+ *   • right triangle             → row width grows with y (mean = half)
+ * Taking the bounding-box width for every row makes a triangle ~60 % too slow;
+ * splitting the two columns into separate regions makes them ~34 % too fast.
+ *
+ * @returns {Array<{ i:number, y:number, x0:number, x1:number }>} non-empty rows,
+ *   top → bottom, `i` = row index (gaps in `i` mark empty bands).
  */
-function rasterRegion(bbox, color, lastPos, basePitch = RASTER_PITCH) {
-  const x0 = bbox.minX - RASTER_OVERSCAN   // left turnaround (with overscan)
-  const x1 = bbox.maxX + RASTER_OVERSCAN   // right turnaround
-  const topY = bbox.maxY                   // y is negative downward → top = max
-  const botY = bbox.minY
-  const height = Math.max(0, topY - botY)
+function rasterScanRows(loops, pitch) {
+  const edges = []
+  let maxY = -Infinity, minY = Infinity
+  for (const { pts, color } of loops) {
+    for (const p of pts) { if (p.y > maxY) maxY = p.y; if (p.y < minY) minY = p.y }
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i + 1]
+      if (a.y === b.y) continue                       // horizontal edge: no crossing
+      edges.push({ lo: Math.min(a.y, b.y), hi: Math.max(a.y, b.y),
+                   xa: a.x, ya: a.y, dxdy: (b.x - a.x) / (b.y - a.y), color })
+    }
+  }
+  if (!edges.length || !isFinite(maxY)) return []
+  edges.sort((e, f) => f.hi - e.hi)                   // sweep top → bottom
 
-  let pitch = basePitch || RASTER_PITCH
+  const height = Math.max(0, maxY - minY)
   let nRows = Math.floor(height / pitch) + 1
-  if (nRows > RASTER_MAX_ROWS) { nRows = RASTER_MAX_ROWS; pitch = height / (nRows - 1) }
+  if (nRows > RASTER_MAX_ROWS) { nRows = RASTER_MAX_ROWS; pitch = height / Math.max(1, nRows - 1) }
 
-  // Serpentine: row left→right, step down, row right→left, step down, …
+  const rows = []
+  let next = 0
+  let active = []
+  for (let i = 0; i < nRows; i++) {
+    const y = maxY - i * pitch
+    while (next < edges.length && edges[next].hi >= y) active.push(edges[next++])
+    if (active.length > 8 && (i & 31) === 0) active = active.filter(e => e.lo <= y)
+    let lo = Infinity, hi = -Infinity, green = false
+    for (const e of active) {
+      if (y > e.hi || y < e.lo) continue
+      const x = e.xa + (y - e.ya) * e.dxdy
+      if (x < lo) lo = x
+      if (x > hi) hi = x
+      if (e.color === 'green') green = true
+    }
+    if (lo <= hi) rows.push({ i, y, x0: lo, x1: hi, green })
+  }
+  return rows
+}
+
+/**
+ * Serpentine over a band of contiguous scan rows, each row spanning only its own
+ * content (plus the calibrated overscan). Emitted as one continuous engrave move
+ * preceded by a travel to its start.
+ */
+function rasterRegion(rows, lastPos, pitch, rasterSpeed = 0) {
+  // Colour is decided PER BAND (this contiguous run of rows), not for the whole
+  // file: a photo bitmap and an unrelated green icon elsewhere in the design
+  // both end up in the raster pass, but only rows a green loop actually crosses
+  // should render green — otherwise a single green shape anywhere in the file
+  // tinted every bitmap green too.
+  const color = rows.some(r => r.green) ? RASTER_GREEN : RASTER_GRAY
+  const over = rasterOverscanFor(rasterSpeed, pitch || RASTER_PITCH)
+  const topY = rows[0].y
+  const botY = rows[rows.length - 1].y
+  let bMinX = Infinity, bMaxX = -Infinity
+
   const prims = []
   let ltr = true
-  for (let i = 0; i < nRows; i++) {
-    const y  = topY - i * pitch
-    const sx = ltr ? x0 : x1
-    const ex = ltr ? x1 : x0
-    prims.push({ t: 'L', a: { x: sx, y }, b: { x: ex, y } })
-    if (i < nRows - 1) {
-      const ny = topY - (i + 1) * pitch
-      prims.push({ t: 'L', a: { x: ex, y }, b: { x: ex, y: ny } }) // vertical step
-    }
+  let prevEnd = null
+  for (const r of rows) {
+    const a = r.x0 - over, b = r.x1 + over
+    if (a < bMinX) bMinX = a
+    if (b > bMaxX) bMaxX = b
+    const sx = ltr ? a : b
+    const ex = ltr ? b : a
+    if (prevEnd) prims.push({ t: 'L', a: prevEnd, b: { x: sx, y: r.y } })  // step to next row
+    prims.push({ t: 'L', a: { x: sx, y: r.y }, b: { x: ex, y: r.y } })
+    prevEnd = { x: ex, y: r.y }
     ltr = !ltr
   }
 
   const moves = []
-  const start = { x: x0, y: topY }
+  const start = prims.length ? primStart(prims[0]) : { x: bMinX, y: topY }
   if (dist(lastPos, start) > 0.1) {
-    moves.push({ kind: 'travel', color: '#888888', a: { ...lastPos }, b: start })
+    moves.push({ kind: 'travel', color: '#888888', a: { ...lastPos }, b: { ...start } })
   }
-  // The full swept rectangle (content + accel/decel overscan on both sides) is
-  // carried so the viewer can optionally draw the region as one filling block
-  // that matches the extent of the serpentine scan lines.
+  // The swept rectangle (content + overscan) is carried so the viewer can draw
+  // the region as one block matching the extent of the scan lines.
   moves.push({
     kind: 'engrave', color, category: 'raster', prims,
-    bbox: { minX: x0, maxX: x1, minY: botY, maxY: topY },
+    bbox: { minX: bMinX, maxX: bMaxX, minY: botY, maxY: topY },
   })
   const end = prims.length ? primEnd(prims[prims.length - 1]) : start
   return { moves, end }
+}
+
+// Path-order optimisation ("Pfadreihenfolge optimieren").
+//
+// MEASURED: on the five real production files the travel budget that the Job
+// Manager's own estimate leaves over is 15/84/79/53/158 s. Plain file order,
+// top-left-first, left-to-right and band-wise sweeps all need 2–5× more travel
+// than that, so the machine clearly minimises travel. Greedy nearest-neighbour
+// lands at 19/83/102/69/171 s — close, but still ABOVE the budget on 4 of 5
+// files, i.e. the machine finds a better tour than greedy. Adding a 2-opt
+// improvement pass gets to 19/78/98/66/163 s and matches the budget far better.
+const TSP_MAX_PATHS = 4000   // above this, greedy only (2-opt is O(n²) per pass)
+const TSP_MAX_PASSES = 20
+
+// Selectable path-order algorithms, exposed in the UI for debugging/comparison
+// against what the printer's own optimiser does:
+//   'file' — no reordering, cut in file order (the pre-optimisation baseline)
+//   'nn'   — greedy nearest-neighbour only
+//   '2opt' — nearest-neighbour seed + 2-opt improvement (closest match to the
+//            printer's measured travel budget — see PATH_ORDER_ALGORITHMS below)
+export const PATH_ORDER_ALGORITHMS = ['file', 'nn', '2opt']
+export const DEFAULT_PATH_ORDER = '2opt'
+
+function nearestNeighbourOrder(paths, startPos) {
+  const pool = [...paths]
+  const seq = []
+  let pos = { ...startPos }
+  while (pool.length) {
+    let best = 0, minD = Infinity, reverse = false
+    for (let i = 0; i < pool.length; i++) {
+      const ds = dist(pos, pool[i].start)
+      const de = dist(pos, pool[i].end)
+      if (ds < minD) { minD = ds; best = i; reverse = false }
+      if (de < minD) { minD = de; best = i; reverse = true }
+    }
+    let cur = pool.splice(best, 1)[0]
+    if (reverse) cur = reversePath(cur)
+    seq.push(cur)
+    pos = cur.end
+  }
+  return seq
+}
+
+// 2-opt improvement pass: reversing seq[i..k] flips the direction of every path
+// inside it, which is free here because a contour may be cut either way round.
+function twoOptImprove(seq, startPos) {
+  const n = seq.length
+  for (let pass = 0; pass < TSP_MAX_PASSES; pass++) {
+    let improved = false
+    for (let i = 0; i < n - 1; i++) {
+      const prev = i === 0 ? startPos : seq[i - 1].end
+      for (let k = i + 1; k < n; k++) {
+        const next = k + 1 < n ? seq[k + 1].start : null
+        const before = dist(prev, seq[i].start) + (next ? dist(seq[k].end, next) : 0)
+        const after  = dist(prev, seq[k].end)   + (next ? dist(seq[i].start, next) : 0)
+        if (after < before - 1e-9) {
+          const slice = seq.slice(i, k + 1).reverse()
+          for (const p of slice) reversePath(p)
+          seq.splice(i, slice.length, ...slice)
+          improved = true
+        }
+      }
+    }
+    if (!improved) break
+  }
+  return seq
+}
+
+// MEASURED (see PATH_ORDER_ALGORITHMS docs at call site / CALIBRATION.md): on the
+// five real production files the travel budget that the printer's own estimate
+// leaves over is 15/84/79/53/158 s. Plain file order needs 2–5× more travel, so
+// the printer clearly minimises travel. Greedy 'nn' lands at 19/83/102/69/171 s —
+// close, but still ABOVE the budget on 4 of 5 files. '2opt' gets to
+// 19/78/98/66/163 s and matches the budget far better — the current default.
+function optimizeOrder(paths, startPos, algo = DEFAULT_PATH_ORDER) {
+  if (algo === 'file' || paths.length < 2) return paths
+  const seq = nearestNeighbourOrder(paths, startPos)
+  if (algo === 'nn' || seq.length < 4 || seq.length > TSP_MAX_PATHS) return seq
+  return twoOptImprove(seq, startPos)
 }
 
 /**
@@ -919,15 +1231,18 @@ function rasterRegion(bbox, color, lastPos, basePitch = RASTER_PITCH) {
  *
  * @param {Array} data       extraction objects (l / c / fp / img / mbox)
  * @param {Object} opts
- * @param {boolean} opts.optimize  nearest-neighbour optimise within each vector
- *                                  phase (mimics the printer's path optimiser).
+ * @param {string} [opts.optimize='file']  path-order algorithm within each vector
+ *   phase — one of PATH_ORDER_ALGORITHMS ('file' | 'nn' | '2opt'); a falsy value
+ *   is treated as 'file' for backwards compatibility with the old boolean flag.
  * @returns {{ moves: Array, stats: Object }}
  *   moves: ordered list of either
  *     { kind:'cut'|'engrave'|'other', color, category, prims }   (beam-on path)
  *     { kind:'travel', color, a, b }                             (rapid move)
  *   stats: { cutLen, engraveLen, otherLen, travelLen, totalTime } (mm / seconds)
  */
-export function buildToolpath(data, { optimize = false, speeds = SPEED_MM_S, rasterPitch = RASTER_PITCH, accel = 0 } = {}) {
+export function buildToolpath(data, { optimize = 'file', speeds = SPEED_MM_S, rasterPitch = RASTER_PITCH, accel = 0 } = {}) {
+  // Accept the old boolean flag too: true -> default algorithm, false -> 'file'.
+  const pathOrderAlgo = optimize === true ? DEFAULT_PATH_ORDER : (optimize || 'file')
   // Resolve the head speed (mm/s) for a move, with raster getting its own speed.
   const speedFor = (m) => {
     const s = m.category === 'raster' ? (speeds.raster ?? speeds.engrave) : speeds[m.kind]
@@ -937,26 +1252,51 @@ export function buildToolpath(data, { optimize = false, speeds = SPEED_MM_S, ras
   const rasterPaths = allPaths.filter(p => p.category === 'green' || p.category === 'gray')
   const vectorPaths = allPaths.filter(p => p.category !== 'green' && p.category !== 'gray')
 
-  // Raster regions: ALL raster content — green + grayscale vectors/fills AND
-  // grayscale bitmaps — is collected as PER-ELEMENT boxes and clustered by
-  // proximity. So nearby content shares one raster box (bitmaps are NOT rastered
-  // one-by-one) and groups farther apart than RASTER_SPLIT_GAP get their own box.
-  const regions = []
-  const rasterBoxes = []
-  const pushBox = (b, color) => { if (b && isFinite(b.minX)) rasterBoxes.push({ ...b, color }) }
-  for (const p of rasterPaths) pushBox(bboxOfPaths([p]), p.category === 'green' ? RASTER_GREEN : RASTER_GRAY)
-  for (const obj of data) {
-    if (obj.type === 'fp' && isRasterColor(obj.fill)) pushBox(bboxOfFpPath(obj.path), isGreen(obj.fill) ? RASTER_GREEN : RASTER_GRAY)
-    else if (obj.type === 'img' && obj.colorspace === 1) pushBox(bboxOfImage(obj), RASTER_GRAY)
+  // Raster content: ALL of it — green + grayscale vectors/fills AND grayscale
+  // bitmaps — goes into ONE scanline pass. The machine sweeps each row from its
+  // leftmost to its rightmost ink, so horizontally separated content in the same
+  // rows shares a sweep (no proximity clustering) while a genuinely empty
+  // vertical band produces no rows at all and thus splits the job by itself.
+  // Each loop keeps its OWN colour tag so a shared band can still tell which
+  // rows are actually green vs. grayscale (see rasterScanRows/rasterRegion).
+  const rasterLoops = []
+  for (const p of rasterPaths) {
+    const pts = []
+    for (const prim of p.prims) {
+      const pp = flattenPrim(prim)
+      if (pts.length) pts.push(...pp.slice(1)); else pts.push(...pp)
+    }
+    if (pts.length > 1) rasterLoops.push({ pts, color: p.category === 'green' ? 'green' : 'gray' })
   }
-  for (const c of clusterBoxes(rasterBoxes, RASTER_SPLIT_GAP)) regions.push({ bbox: c, color: c.color })
+  for (const obj of data) {
+    if (obj.type === 'fp' && isRasterColor(obj.fill)) {
+      const color = isGreen(obj.fill) ? 'green' : 'gray'
+      for (const loop of fpLoops(obj.path)) if (loop.length > 1) rasterLoops.push({ pts: loop, color })
+    } else if (obj.type === 'img' && obj.colorspace === 1) {
+      const b = bboxOfImage(obj)
+      rasterLoops.push({
+        pts: [{ x: b.minX, y: b.maxY }, { x: b.maxX, y: b.maxY },
+              { x: b.maxX, y: b.minY }, { x: b.minX, y: b.minY }, { x: b.minX, y: b.maxY }],
+        color: 'gray',
+      })
+    }
+  }
+  const scanRows = rasterScanRows(rasterLoops, rasterPitch || RASTER_PITCH)
+  // Split into bands of CONTIGUOUS rows: an empty vertical gap ends a band.
+  const bands = []
+  for (const r of scanRows) {
+    const last = bands[bands.length - 1]
+    if (last && r.i === last[last.length - 1].i + 1) last.push(r)
+    else bands.push([r])
+  }
 
   const moves = []
   let lastPos = { x: 0, y: 0 } // print head starts at the top-left corner
 
-  // ── Engrave phase 1: raster regions (green + grayscale) ────────────────────
-  for (const region of regions) {
-    const r = rasterRegion(region.bbox, region.color, lastPos, rasterPitch)
+  // ── Engrave phase 1: raster bands (green + grayscale) ──────────────────────
+  for (const band of bands) {
+    const r = rasterRegion(band, lastPos, rasterPitch || RASTER_PITCH,
+                           speeds.raster ?? speeds.engrave)
     for (const m of r.moves) moves.push(m)
     lastPos = r.end
   }
@@ -966,25 +1306,7 @@ export function buildToolpath(data, { optimize = false, speeds = SPEED_MM_S, ras
     let group = vectorPaths.filter(p => p.category === cat)
     if (group.length === 0) continue
 
-    if (optimize) {
-      // Greedy nearest-neighbour, considering both endpoints (allow reversal).
-      const seq = []
-      let nnPos = { ...lastPos }
-      while (group.length) {
-        let best = 0, minD = Infinity, reverse = false
-        for (let i = 0; i < group.length; i++) {
-          const ds = dist(nnPos, group[i].start)
-          const de = dist(nnPos, group[i].end)
-          if (ds < minD) { minD = ds; best = i; reverse = false }
-          if (de < minD) { minD = de; best = i; reverse = true }
-        }
-        let cur = group.splice(best, 1)[0]
-        if (reverse) cur = reversePath(cur)
-        seq.push(cur)
-        nnPos = cur.end
-      }
-      group = seq
-    }
+    if (pathOrderAlgo !== 'file') group = optimizeOrder(group, lastPos, pathOrderAlgo)
     // (unoptimised: keep file order)
 
     for (const p of group) {
@@ -996,11 +1318,10 @@ export function buildToolpath(data, { optimize = false, speeds = SPEED_MM_S, ras
     }
   }
 
-  // Return the head to the home corner (top-left, 0,0) at the end of the job.
-  if (dist(lastPos, { x: 0, y: 0 }) > 0.1) {
-    moves.push({ kind: 'travel', color: '#888888', a: { ...lastPos }, b: { x: 0, y: 0 } })
-    lastPos = { x: 0, y: 0 }
-  }
+  // NO return-to-home move: the machine's own estimate does not include it. The
+  // three dashes files (17–19) are the evidence — they end far from the origin
+  // (275/395/595 mm), and counting the way back overshoots their displayed time
+  // by 6–13 %, while leaving it out lands every one of them within ~1,5 %.
 
   // Stats + time estimate. Length AND time are tracked per operation type, with
   // raster engrave (green/grayscale serpentine) split out from vector engrave
@@ -1034,7 +1355,8 @@ export function buildToolpath(data, { optimize = false, speeds = SPEED_MM_S, ras
     else for (const prim of m.prims) L += primLength(prim)
     // Acceleration-aware: ramps at every corner (each scan-line turnaround), so
     // the printer's accel value actually drives the estimate.
-    const T = rampSegments(movePolyline(m), speedFor(m), accel).total
+    const T = rampSegments(movePolyline(m), speedFor(m), accelFor(m, accel),
+                           cornerPenaltyFor(m)).total + moveExtraTime(m)
 
     if      (m.kind === 'travel')     { stats.travelLen  += L; stats.travelTime  += T }
     else if (m.kind === 'cut')        { stats.cutLen     += L; stats.cutTime     += T }
@@ -1043,5 +1365,6 @@ export function buildToolpath(data, { optimize = false, speeds = SPEED_MM_S, ras
     else                              { stats.otherLen   += L; stats.otherTime   += T }
     stats.totalTime += T
   }
+  stats.totalTime += CALIBRATION.jobOverhead
   return { moves, stats, tinyBoxes }
 }

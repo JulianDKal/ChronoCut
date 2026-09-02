@@ -1,9 +1,18 @@
 <template>
   <div class="playback-container">
     <div class="controls-wrapper">
-      <!-- Play / Pause -->
+      <!-- Play / Pause — drawn as SVG rather than the ▶/⏸ text glyphs: those
+           come from the system font and their glyph bounding boxes are rarely
+           centred the same way across platforms (same reason the language
+           flags are inline SVG, not emoji). A drawn shape centres exactly. -->
       <button class="play-btn" @click="handlePlayPause" :aria-label="isPlaying ? 'Pause' : 'Play'">
-        <span class="play-icon" :class="{ 'is-play': !isPlaying }">{{ isPlaying ? '⏸' : '▶' }}</span>
+        <svg v-if="isPlaying" class="play-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+          <rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor" />
+          <rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor" />
+        </svg>
+        <svg v-else class="play-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+          <path d="M7 4.5v15l13-7.5z" fill="currentColor" />
+        </svg>
       </button>
 
       <!-- Current time -->
@@ -267,14 +276,8 @@ const handleSliderMouseUp   = () => { isDragging.value = false }
 }
 
 .play-icon {
-  font-size: 20px;
-  line-height: 1;
+  display: block;
   color: white;
-}
-
-/* Optically centre the ▶ triangle (the pause glyph is already centred). */
-.play-icon.is-play {
-  padding-left: 3px;
 }
 
 /* Time labels (inline, on either side of the timeline) */

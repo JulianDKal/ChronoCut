@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="95.000mm" height="80.000mm" viewBox="0 0 95.000 80.000">
+  <!-- 35_combo_B -->
+  <circle cx="22.000" cy="22.000" r="6" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="42.000" cy="22.000" r="6" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="62.000" cy="22.000" r="6" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="82.000" cy="22.000" r="6" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="10.000" y="38.000" width="75.000" height="6.000" fill="#00FF00" stroke="none"/>
+  <rect x="10.000" y="50.000" width="60.000" height="6.000" fill="#00FF00" stroke="none"/>
+  <rect x="10.000" y="62.000" width="40.000" height="6.000" fill="#00FF00" stroke="none"/>
+</svg>

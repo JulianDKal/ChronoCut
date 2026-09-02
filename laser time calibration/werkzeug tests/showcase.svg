@@ -1,0 +1,301 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!--
+  ChronoCut feature showcase.  Upload this in the app to demo everything.
+  Colour -> operation:  red = vector engrave,  blue = cut,  green = raster.
+  Coordinates are in points (1 pt = 0.3528 mm), so 800x520 pt = ~282x183 mm.
+
+  What each group triggers:
+   - green fill            -> Raster engrave region
+   - red strokes           -> Vector engrave (lines + a curve)
+   - blue outer rect       -> Cut (large part)
+   - 8 tiny blue rects     -> "tiny parts may fall through the grid" warning + highlight
+   - 6 blue circles        -> pushes the cut-part count > 10 -> handling-time warning
+   - near-red / near-blue / near-green -> "Fix Colors" snaps them to pure
+   - near-white line + fill -> "Remove White" deletes them
+   - coincident red+blue line -> "Remove Doubles" finds & removes the red
+   - purple line            -> the "Other" operation row in the breakdown
+   - gray fill (far right)   -> grayscale = raster; far from the green block, so it
+                               becomes its OWN raster box (proximity split)
+-->
+
+<svg
+   width="800"
+   height="520"
+   viewBox="0 0 800 520"
+   version="1.1"
+   id="svg58"
+   sodipodi:docname="showcase.svg"
+   inkscape:version="1.1.1 (3bf5ae0d25, 2021-09-20)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns:xlink="http://www.w3.org/1999/xlink"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs62">
+    <rect
+       x="483.12399"
+       y="333.25315"
+       width="101.46535"
+       height="41.889363"
+       id="rect6973" />
+  </defs>
+  <sodipodi:namedview
+     id="namedview60"
+     pagecolor="#505050"
+     bordercolor="#eeeeee"
+     borderopacity="1"
+     inkscape:pageshadow="0"
+     inkscape:pageopacity="0"
+     inkscape:pagecheckerboard="0"
+     showgrid="false"
+     inkscape:zoom="1.0742584"
+     inkscape:cx="418.89363"
+     inkscape:cy="311.3776"
+     inkscape:window-width="1920"
+     inkscape:window-height="991"
+     inkscape:window-x="-9"
+     inkscape:window-y="-9"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg58" />
+  <!-- ===== CUT: outer part outline (large closed blue contour) ===== -->
+  <rect
+     x="20"
+     y="20"
+     width="760"
+     height="480"
+     fill="none"
+     stroke="#0000ff"
+     stroke-width="2"
+     id="rect2" />
+  <!-- ===== RASTER: green filled block ===== -->
+  <!-- ===== VECTOR ENGRAVE: red outline + red curve ===== -->
+  <circle
+     cx="630"
+     cy="110"
+     r="55"
+     fill="none"
+     stroke="#ff0000"
+     stroke-width="2"
+     id="circle6" />
+  <path
+     d="M 440 120 C 490 60, 560 170, 610 110"
+     fill="none"
+     stroke="#ff0000"
+     stroke-width="2"
+     id="path8" />
+  <polyline
+     points="320,120 360,80 400,130 440,80"
+     fill="none"
+     stroke="#ff0000"
+     stroke-width="2"
+     id="polyline10" />
+  <!-- ===== OTHER: a non-grayscale "other" colour (purple) → the "Other" row ===== -->
+  <line
+     x1="60"
+     y1="200"
+     x2="320"
+     y2="200"
+     stroke="#7a3cff"
+     stroke-width="2"
+     id="line12"
+     style="stroke:#4c13ff;stroke-opacity:1" />
+  <!-- ===== RASTER (grayscale): a gray fill far from the green block → its OWN raster box ===== -->
+  <!-- ===== REMOVE WHITE: a near-white line + a near-white fill ===== -->
+  <line
+     x1="360"
+     y1="200"
+     x2="620"
+     y2="200"
+     stroke="#f8f8f8"
+     stroke-width="2"
+     id="line16" />
+  <rect
+     x="640"
+     y="188"
+     width="90"
+     height="26"
+     fill="#fcfcfc"
+     id="rect18" />
+  <!-- ===== FIX COLORS: near-pure colours that should snap to pure ===== -->
+  <line
+     x1="60"
+     y1="250"
+     x2="320"
+     y2="250"
+     stroke="#ee1c24"
+     stroke-width="2"
+     id="line20" />
+  <!-- near red  -->
+  <line
+     x1="360"
+     y1="250"
+     x2="620"
+     y2="250"
+     stroke="#1822e6"
+     stroke-width="2"
+     id="line22" />
+  <!-- near blue -->
+  <!-- near green -->
+  <!-- ===== REMOVE DOUBLES: a red line lying exactly on a blue line ===== -->
+  <line
+     x1="430"
+     y1="300"
+     x2="740"
+     y2="300"
+     stroke="#0000ff"
+     stroke-width="2"
+     id="line26" />
+  <line
+     x1="430"
+     y1="300"
+     x2="740"
+     y2="300"
+     stroke="#ff0000"
+     stroke-width="2"
+     id="line28" />
+  <!-- ===== TINY PARTS: 8 small blue rects (~13.4 x 7.1 mm) -> fall-through warning ===== -->
+  <rect
+     x="60"
+     y="320"
+     width="38"
+     height="20"
+     fill="none"
+     stroke="#0000ff"
+     stroke-width="1.5"
+     id="rect30" />
+  <rect
+     x="110"
+     y="320"
+     width="38"
+     height="20"
+     fill="none"
+     stroke="#0000ff"
+     stroke-width="1.5"
+     id="rect32" />
+  <rect
+     x="160"
+     y="320"
+     width="38"
+     height="20"
+     fill="none"
+     stroke="#0000ff"
+     stroke-width="1.5"
+     id="rect34" />
+  <rect
+     x="210"
+     y="320"
+     width="38"
+     height="20"
+     fill="none"
+     stroke="#0000ff"
+     stroke-width="1.5"
+     id="rect36" />
+  <rect
+     x="260"
+     y="320"
+     width="38"
+     height="20"
+     fill="none"
+     stroke="#0000ff"
+     stroke-width="1.5"
+     id="rect38" />
+  <rect
+     x="310"
+     y="320"
+     width="38"
+     height="20"
+     fill="none"
+     stroke="#0000ff"
+     stroke-width="1.5"
+     id="rect40" />
+  <rect
+     x="360"
+     y="320"
+     width="38"
+     height="20"
+     fill="none"
+     stroke="#0000ff"
+     stroke-width="1.5"
+     id="rect42" />
+  <rect
+     x="398"
+     y="320"
+     width="38"
+     height="20"
+     fill="none"
+     stroke="#0000ff"
+     stroke-width="1.5"
+     id="rect44" />
+  <!-- ===== MORE CUT PARTS: 6 blue circles -> part count > 10 (handling warning) ===== -->
+  <circle
+     cx="90"
+     cy="430"
+     r="20"
+     fill="none"
+     stroke="#0000ff"
+     stroke-width="1.5"
+     id="circle46" />
+  <circle
+     cx="170"
+     cy="430"
+     r="20"
+     fill="none"
+     stroke="#0000ff"
+     stroke-width="1.5"
+     id="circle48" />
+  <circle
+     cx="250"
+     cy="430"
+     r="20"
+     fill="none"
+     stroke="#0000ff"
+     stroke-width="1.5"
+     id="circle50" />
+  <circle
+     cx="330"
+     cy="430"
+     r="20"
+     fill="none"
+     stroke="#0000ff"
+     stroke-width="1.5"
+     id="circle52" />
+  <circle
+     cx="410"
+     cy="430"
+     r="20"
+     fill="none"
+     stroke="#0000ff"
+     stroke-width="1.5"
+     id="circle54" />
+  <circle
+     cx="490"
+     cy="430"
+     r="20"
+     fill="none"
+     stroke="#0000ff"
+     stroke-width="1.5"
+     id="circle56" />
+  <image
+     width="133.47849"
+     height="133.99493"
+     preserveAspectRatio="none"
+     xlink:href="data:image/png;base64,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 "
+     id="image1047"
+     x="607.68604"
+     y="330.46075" />
+  <text
+     xml:space="preserve"
+     id="text6971"
+     style="fill:black;fill-opacity:1;line-height:1.25;stroke:none;font-family:sans-serif;font-style:normal;font-weight:normal;font-size:40px;white-space:pre;shape-inside:url(#rect6973)" />
+  <text
+     xml:space="preserve"
+     style="font-style:normal;font-weight:normal;font-size:40px;line-height:1.25;font-family:sans-serif;vector-effect:non-scaling-stroke;fill:#00ff00;fill-opacity:1;stroke:#ff0000;stroke-width:0.01;stroke-miterlimit:4;stroke-dasharray:none;stroke-opacity:1;-inkscape-stroke:hairline"
+     x="64.230339"
+     y="126.59897"
+     id="text7353"><tspan
+       sodipodi:role="line"
+       id="tspan7351"
+       x="64.230339"
+       y="126.59897">ChronoCut</tspan></text>
+</svg>

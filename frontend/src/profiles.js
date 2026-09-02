@@ -1,3 +1,5 @@
+import { CALIBRATION, rasterSpeedForPct } from './calibration'
+
 // Printer / material profiles loaded at startup from GET /api/printers, which
 // returns the contents of every *.xml in backend/printers/. Each file is
 // self-contained: a root <printer …> with specs + a <materials> block of presets.
@@ -110,14 +112,24 @@ export function resolveSpeed(spec, maxSpeed) {
 
 // Resolved speeds (+ raster pitch + acceleration) for buildToolpath, given the
 // selected printer and a thickness preset (with cut/engrave/raster specs).
+// Raster runs on a SEPARATE speed scale from the vector head — measured roughly
+// 7× faster, so resolving raster-% against the vector maxSpeed is badly wrong.
+// See calibration.js (rasterSpeedForPct) for the measured curve.
+function resolveRasterSpeed(spec) {
+  if (!spec || !isFinite(spec.speed)) return null
+  return spec.unit === '%' ? rasterSpeedForPct(spec.speed) : spec.speed
+}
+
 export function speedsFor(printer, preset) {
   const max = printer?.maxSpeed || 500
   const cut = resolveSpeed(preset?.cut, max) ?? 30
   const engrave = resolveSpeed(preset?.engrave, max) ?? 80
-  const raster = resolveSpeed(preset?.raster, max) ?? engrave
+  const raster = resolveRasterSpeed(preset?.raster) ?? engrave
   return {
-    speeds: { cut, engrave, raster, other: cut, travel: max },   // travel = 100 % max
+    // Travel runs at a constant, camera-measured 250 mm/s — it does NOT scale
+    // with the job's speed setting.
+    speeds: { cut, engrave, raster, other: cut, travel: CALIBRATION.travelSpeed },
     rasterPitch: preset?.raster?.pitch ?? 0.6,
-    accel: printer?.accel || 0,
+    accel: printer?.accel || CALIBRATION.vectorAccel,
   }
 }

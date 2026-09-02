@@ -41,13 +41,19 @@
       />
     </div>
 
-    <!-- Toggles (view + debug toggles live as floating buttons top-right; this
-         one affects the generated toolpath) -->
-    <div class="button-group toggle-group">
-      <label class="opt-toggle" :title="t('tipOptimize')">
-        <input type="checkbox" v-model="optimizePath" @change="onOptimizeChange" />
-        <span class="opt-text">{{ t('optimizePath') }}</span>
-      </label>
+    <!-- Path-order algorithm (view + debug toggles live as floating buttons
+         top-right; this one affects the generated toolpath). Selectable so the
+         algorithms can be compared against each other and against what the
+         printer's own optimiser does — see toolpath.js PATH_ORDER_ALGORITHMS. -->
+    <div class="button-group toggle-group" :title="t('tipOptimize')">
+      <span class="opt-text">{{ t('optimizePath') }}</span>
+      <ProfileDropdown
+        :model-value="selectedPathOrder"
+        @update:model-value="selectPathOrder"
+        :items="pathOrderOptions"
+        label-key="name"
+        item-key="id"
+      />
     </div>
 
     <div class="spacer"></div>
@@ -71,9 +77,11 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import eventBus from '../eventBus'
 import { loadProfiles, speedsFor } from '../profiles'
+import { PATH_ORDER_ALGORITHMS } from '../toolpath'
+import { getStoredViewSettings, setStoredViewSetting } from '../viewSettings'
 import { t } from '../translations'
 import ProfileDropdown from './ProfileDropdown.vue'
 
@@ -90,10 +98,23 @@ const selectedCutter    = ref(null)
 const selectedFamily    = ref(null)   // chosen material family
 const selectedThickness = ref(null)   // chosen thickness preset (carries the speeds)
 
-// Path optimisation toggle (default ON — mimic the printer's shortest-travel order).
-const optimizePath = ref(true)
-const onOptimizeChange = () => {
-  eventBus.emit('optimize-changed', optimizePath.value)
+// Path-order algorithm (default '2opt' — closest match to the printer's own
+// optimiser; see toolpath.js). Selectable in the UI for debugging/comparison.
+// Only the id is kept as state; the option objects (with a translated label)
+// are recomputed on every render so a language switch updates the label too.
+const PATH_ORDER_LABEL_KEY = { file: 'pathOrderFile', nn: 'pathOrderNn', '2opt': 'pathOrder2opt' }
+const pathOrderOptions = computed(() =>
+  PATH_ORDER_ALGORITHMS.map((id) => ({ id, name: t(PATH_ORDER_LABEL_KEY[id]) })))
+// Restored from localStorage (see viewSettings.js) so a reload keeps the last
+// choice — ThreeViewer self-sources the same value on its own mount, this
+// only needs to reflect it back into the dropdown's initial selection.
+const selectedPathOrderId = ref(getStoredViewSettings().pathOrder)
+const selectedPathOrder = computed(() =>
+  pathOrderOptions.value.find((o) => o.id === selectedPathOrderId.value))
+const selectPathOrder = (opt) => {
+  selectedPathOrderId.value = opt.id
+  setStoredViewSetting('pathOrder', opt.id)
+  eventBus.emit('optimize-changed', opt.id)
 }
 
 // NB: the view + debug toggles (travel, rulers, raster-as-block, debug colours,
@@ -292,21 +313,8 @@ onBeforeUnmount(() => {
 /* Space between the Material dropdown and the toggles below it */
 .toggle-group { margin-top: 22px; }
 
-/* ── Optimise toggle ───────────────────────────────────────── */
-.opt-toggle {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  background: var(--ctrl-bg);
-  border: 1px solid var(--ctrl-border);
-  border-radius: 8px;
-  cursor: pointer;
-  user-select: none;
-}
-.opt-toggle:hover { background: var(--ctrl-hover); }
-.opt-toggle input { width: 16px; height: 16px; cursor: pointer; accent-color: #DE041F; }
-.opt-text { font-size: 13px; color: var(--text-strong); }
+/* ── Path-order algorithm label ────────────────────────────── */
+.opt-text { font-size: 13px; color: var(--text-strong); margin-bottom: 6px; display: block; }
 
 /* ── Upload button ─────────────────────────────────────────── */
 .upload-btn {
