@@ -4,10 +4,19 @@
     <!-- Mobile: a plain, single-column version (no 3D viewer) -->
     <MobileApp v-if="isMobile" :is-dark="isDark" @toggle-theme="toggleTheme" />
 
-    <div v-else class="app-container">
-    <!-- Sidebar - Left -->
-    <aside class="sidebar">
+    <div v-else class="app-container" :class="{ resizing: resizingSidebar }">
+    <!-- Sidebar - Left. Width is user-draggable (persisted); the handle on its
+         right edge starts the drag, double-click resets to the default. -->
+    <aside class="sidebar" :style="{ width: sidebarWidth + 'px' }">
       <Sidebar />
+      <div
+        class="sidebar-resizer"
+        :class="{ dragging: resizingSidebar }"
+        role="separator"
+        aria-orientation="vertical"
+        @pointerdown="startSidebarResize"
+        @dblclick="resetSidebarWidth"
+      ></div>
     </aside>
 
     <!-- Main Content Area -->
@@ -16,24 +25,23 @@
       <div class="viewer-container">
         <ThreeViewer />
 
-        <!-- Debug overlay (top-left) — toggled by the sidebar "Debug" switch -->
+        <!-- Debug overlay (top-left) - toggled by the sidebar "Debug" switch -->
         <div v-show="showDebug" class="hud-chip debug-overlay">{{ t('segments') }}: {{ segmentCount.toLocaleString() }}</div>
 
-        <!-- Speed-gradient legend (top-left) — toggled by the sidebar switch -->
+        <!-- Speed-gradient legend (top-left) - toggled by the sidebar switch -->
         <div v-show="showGradient" class="hud-chip speed-legend">
           <span>{{ t('slow') }}</span>
           <div class="speed-bar"></div>
           <span>{{ t('fast') }}</span>
         </div>
 
-        <!-- Dark-mode toggle (floating, top-right) -->
-        <ThemeToggle :is-dark="isDark" @toggle="toggleTheme" />
-
-        <!-- Language switcher (floating, beneath the dark-mode toggle) -->
-        <LanguageSwitcher />
-
-        <!-- Floating view toggles (top-right): travel, rulers, raster, debug -->
-        <ViewToggles />
+        <!-- Top-right controls: theme, language, view toggles, one floating
+             column instead of two separate ones. -->
+        <div class="top-right-controls">
+          <ThemeToggle :is-dark="isDark" @toggle="toggleTheme" />
+          <LanguageSwitcher />
+          <ViewToggles />
+        </div>
 
         <!-- Fit / rotate banner (top-centre) -->
         <div v-if="fit && !fit.ok" class="fit-banner" :class="{ error: !fit.canRotate }">
@@ -44,15 +52,24 @@
           </template>
           <span v-else class="fit-msg">{{ t('tooBig', { dw: fit.design.w, dh: fit.design.h, bw: fit.bed.w, bh: fit.bed.h }) }}</span>
         </div>
+      </div>
 
-        <!-- Floating control islands over the preview -->
-        <div class="floating-dock" :class="{ 'is-disabled': !hasContent }">
-          <div class="island island--timeline">
-            <PlayBack />
-          </div>
-          <div class="island island--download">
-            <DownloadComponent />
-          </div>
+      <!-- Bottom dock: ONE container holding two groups, playback on the
+           left, result + export on the right, parted by a single hairline.
+           Neither group draws a box of its own; boxing them inside a bar that
+           is already a box reads as encapsulating the controls twice.
+
+           The separator + result/export group are wrapped in .dock-right,
+           not for anything visual, purely so DownloadComponent's breakdown
+           popover has a positioning ancestor whose box spans EXACTLY "from
+           the separator to the dock's true right edge" and whose top edge is
+           flush with the dock's own top border (see the CSS notes on
+           .dock-right and .breakdown for how). -->
+      <div class="dock" :class="{ 'is-disabled': !hasContent }">
+        <PlayBack />
+        <div class="dock-right">
+          <span class="dock-sep" aria-hidden="true"></span>
+          <DownloadComponent />
         </div>
       </div>
     </div>
@@ -61,7 +78,7 @@
     <!-- Teleport target for floating UI (e.g. PlayBack's speed menu) that must
          escape an ancestor's `overflow: hidden` but still needs the theme's
          CSS custom properties (--dropdown-bg etc.), which only cascade within
-         .cc-theme — teleporting straight to <body> would lose them. -->
+         .cc-theme: teleporting straight to <body> would lose them. -->
     <div id="cc-portal-root"></div>
   </div>
 </template>
@@ -79,6 +96,10 @@ import ViewToggles from './components/ViewToggles.vue'
 import eventBus from './eventBus'
 import { t } from './translations'
 import { THEME_KEY, getStoredDark } from './theme'
+import {
+  SIDEBAR_DEFAULT_WIDTH, clampSidebarWidth,
+  getStoredSidebarWidth, setStoredSidebarWidth,
+} from './layout'
 
 // Mobile vs. desktop layout. On a narrow viewport we render the plain MobileApp
 // instead of the full 3D-viewer layout. Kept reactive so rotating a phone or
@@ -111,13 +132,45 @@ const onFitStatus = (s) => { fit.value = s }
 const rotate = (dir) => eventBus.emit('rotate-design', dir)
 
 // Dark mode (the viewer reacts via the 'theme-changed' event, and also reads the
-// stored value directly on its own mount — see theme.js — so it stays in sync
+// stored value directly on its own mount - see theme.js - so it stays in sync
 // even when it's unmounted/remounted, e.g. by the mobile/desktop layout switch).
 const isDark = ref(getStoredDark())
 const toggleTheme = () => {
   isDark.value = !isDark.value
   localStorage.setItem(THEME_KEY, isDark.value ? 'dark' : 'light')
   eventBus.emit('theme-changed', isDark.value)
+}
+
+// ── Sidebar resize ──────────────────────────────────────────────────────────
+// The sidebar starts at the viewport's left edge, so the pointer's clientX IS
+// the width being asked for, no offset bookkeeping needed. Width is applied
+// live (the viewer re-fits itself via its ResizeObserver) and only written to
+// storage when the drag ends, so a drag isn't hundreds of localStorage writes.
+const sidebarWidth = ref(getStoredSidebarWidth())
+const resizingSidebar = ref(false)
+
+const onSidebarResizeMove = (e) => { sidebarWidth.value = clampSidebarWidth(e.clientX) }
+
+const endSidebarResize = () => {
+  if (!resizingSidebar.value) return
+  resizingSidebar.value = false
+  window.removeEventListener('pointermove', onSidebarResizeMove)
+  window.removeEventListener('pointerup', endSidebarResize)
+  window.removeEventListener('pointercancel', endSidebarResize)
+  setStoredSidebarWidth(sidebarWidth.value)
+}
+
+const startSidebarResize = (e) => {
+  e.preventDefault()          // don't start a text selection / native drag
+  resizingSidebar.value = true
+  window.addEventListener('pointermove', onSidebarResizeMove)
+  window.addEventListener('pointerup', endSidebarResize)
+  window.addEventListener('pointercancel', endSidebarResize)
+}
+
+const resetSidebarWidth = () => {
+  sidebarWidth.value = SIDEBAR_DEFAULT_WIDTH
+  setStoredSidebarWidth(sidebarWidth.value)
 }
 
 onMounted(() => {
@@ -132,6 +185,7 @@ onMounted(() => {
   if (isDark.value) eventBus.emit('theme-changed', true)
 })
 onBeforeUnmount(() => {
+  endSidebarResize()   // drops any listeners still attached mid-drag
   mobileMq.removeEventListener('change', onMqChange)
   eventBus.off('lines-updated', onLinesUpdated)
   eventBus.off('toolpath-stats', onStats)
@@ -153,16 +207,60 @@ onBeforeUnmount(() => {
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }
 
-/* Sidebar Styles */
+/* While dragging the sidebar edge, keep the resize cursor everywhere and stop
+   the pointer from selecting text as it sweeps across the UI. */
+.app-container.resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* Sidebar Styles, width comes from the inline :style (user-draggable, see
+   layout.js), so it is deliberately not set here. flex:0 0 auto stops the
+   flex row from shrinking it back below that width. */
 .sidebar {
-  width: 250px;
+  position: relative;
+  flex: 0 0 auto;
   background-color: var(--panel-bg);
   display: flex;
   flex-direction: column;
+  /* Border AND shadow, same as .dock (below) - both toolbars separate
+     themselves from the viewer the same way, this one on the right edge
+     instead of the top. */
+  border-right: 1px solid var(--panel-border);
   box-shadow: 2px 0 5px rgba(0, 0, 0, 0.1);
-  z-index: 10;
+  /* Higher than .dock's (65, below) so the sidebar's own subtree, including
+     this shadow, sits IN FRONT of the dock where the two meet at the
+     bottom-left corner - the shadow bleeding rightward off the sidebar's
+     edge should show over the dock, not get hidden beneath it. */
+  z-index: 70;
   transition: background-color 0.25s ease;
 }
+
+/* Drag handle on the sidebar's right edge. Wider than the line it draws, so
+   it is comfortably grabbable without looking like a thick border. */
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -3px;
+  width: 7px;
+  z-index: 20;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+.sidebar-resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+.sidebar-resizer:hover::after,
+.sidebar-resizer.dragging::after { background: #00ADC6; }
 
 /* Main Content Area (right of sidebar) */
 .main-content {
@@ -172,11 +270,31 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 
-/* Three.js Viewer Container — fills the area; controls float on top */
+/* Three.js Viewer Container - fills the area; controls float on top.
+   The background matches the WebGL scene's clear colour so that a frame in
+   which the canvas doesn't yet cover the container (dragging the sidebar
+   resizes it continuously) shows the viewer's own colour rather than a white
+   flash of the page underneath. */
 .viewer-container {
   flex: 1;
   position: relative;
   overflow: hidden;
+  background: var(--viewer-bg);
+}
+
+/* ── Top-right controls (theme, language, view toggles) ─────────────────────
+   One floating column: each child component (ThemeToggle/LanguageSwitcher/
+   ViewToggles) no longer positions itself, this wrapper does, so they stack
+   as ordinary flex items instead of three independently-placed overlays. */
+.top-right-controls {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
 }
 
 /* ── HUD chips (debug overlay + speed-gradient legend) ──────────────────────
@@ -246,53 +364,104 @@ onBeforeUnmount(() => {
 }
 .fit-btn:hover { background: #0093A8; }
 
-/* ── Floating control dock ──────────────────────────────────────────────── */
-.floating-dock {
-  position: absolute;
-  left: 24px;
-  right: 24px;
-  bottom: 24px;
+/* ── Bottom dock (playback + result/export) ──────────────────────────────
+   The horizontal counterpart of the sidebar: a chrome panel in the very same
+   --panel-bg, carrying raised --ctrl-bg cards exactly like the sidebar
+   carries its white dropdowns. Together the two frame the viewer in an L of
+   chrome, and the dock stops reading as a stray strip.
+
+   It lives in normal flow as a sibling of .viewer-container inside the
+   .main-content flex column, so the viewer shrinks to make room rather than
+   being covered, and align-items is `center`, never `stretch`, so the two
+   groups keep their own heights instead of one dictating the other's.
+
+   The dock is the ONLY container: the groups inside it are bare, separated by
+   .dock-sep alone. Giving them borders as well put a box inside a box.
+
+   Right padding lives on .dock-right below, not here: see that rule for why. */
+.dock {
+  /* position + z-index mirror .sidebar's own (above), for two reasons at
+     once: it's what lets DownloadComponent's breakdown panel (teleported to
+     #cc-portal-root, z-index:60) sit BEHIND this once they're genuine
+     siblings instead of ancestor/descendant (see the long comment on
+     .breakdown in DownloadComponent.vue for why the ancestor/descendant
+     version could never work no matter the numbers) - and it's LOWER than
+     .sidebar's 70, so the sidebar's own subtree (including ITS shadow)
+     paints in front of the dock at their shared bottom-left corner, not the
+     other way round. */
+  position: relative;
+  z-index: 65;
+  flex: 0 0 auto;
   display: flex;
-  align-items: flex-end;   /* each island keeps its own height */
-  gap: 16px;
-  /* Above the top-right buttons (theme toggle 20, view toggles 20, language
-     switcher 30) so an expanded island (e.g. the download breakdown growing
-     tall) renders in front of them instead of colliding underneath. */
-  z-index: 40;
-  /* Let clicks pass through to the canvas everywhere except on the islands. */
-  pointer-events: none;
-  transition: opacity 0.25s ease, filter 0.25s ease;
+  align-items: center;
+  gap: 14px;
+  padding: 9px 0 9px 18px;
+  background: var(--panel-bg);
+  /* Border AND shadow, same as .sidebar (below) - both toolbars separate
+     themselves from the viewer the same way, this one just mirrored to the
+     top edge instead of the right. */
+  border-top: 1px solid var(--panel-border);
+  /* Same shadow as .sidebar, mirrored to point up instead of right - the
+     dock sits at the bottom edge, so it casts its separation-from-the-viewer
+     shadow upward the way the sidebar casts its own rightward. */
+  box-shadow: 0 -2px 5px rgba(0, 0, 0, 0.1);
+  transition: background 0.25s ease;
 }
 
-.island {
-  pointer-events: auto;
-  background: var(--card-bg);
-  border-radius: 14px;
-  border: 1px solid var(--panel-border);
-  box-shadow: var(--panel-shadow);
-  overflow: hidden;
+/* Purely a positioning device (see the template comment), no visual styling
+   of its own. `align-self: stretch` overrides the dock's own
+   `align-items: center` just for this one item, so THIS box's own height
+   matches the dock's full content height instead of shrink-wrapping its
+   (shorter, centred) content, which in turn means its top edge sits exactly
+   at the dock's own top edge.
+
+   DownloadComponent's breakdown panel is teleported out to #cc-portal-root
+   (see its own CSS note for why), so it no longer positions itself against
+   this box via CSS containment - it measures it instead
+   (`.closest('.dock-right').getBoundingClientRect()`), giving the same
+   result (flush with the dock's actual top border, spanning exactly the
+   width from .dock-sep to the dock's right edge) without needing this to be
+   its containing block. position:relative isn't actually required for that
+   lookup (`.closest` is a plain class-name walk, unrelated to CSS
+   positioning) - it's just not worth removing since nothing depends on it
+   being gone either. padding-right replaces the dock's own former right
+   padding for this side, so the visual spacing is unchanged. */
+.dock-right {
+  position: relative;
+  flex: 0 0 auto;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-right: 18px;
 }
 
-.island--timeline { flex: 1 1 auto; min-width: 0; }
-.island--download { flex: 0 0 auto; }
+/* The single hairline parting playback from result+export. align-self:stretch
+   now spans .dock-right's full (dock-height) box, not just this section's
+   own shorter content height, a taller, more visible divider line. */
+.dock-sep {
+  flex: 0 0 auto;
+  width: 1px;
+  align-self: stretch;
+  margin: 4px 0;
+  background: var(--ctrl-border);
+}
 
-/* Until something is uploaded: keep the card backgrounds correct, just disable
-   interaction and fade the controls inside (so the timeline doesn't look tinted). */
-.floating-dock.is-disabled .island {
-  pointer-events: none;
-}
-.floating-dock.is-disabled .island > * {
-  opacity: 0.45;
-}
+/* Until something is uploaded: block interaction and fade the card CONTENTS
+   while leaving the card backgrounds intact, a tinted, half-transparent card
+   reads as broken rendering, whereas faded contents read as "not ready yet". */
+.dock.is-disabled > * { pointer-events: none; }
+.dock.is-disabled :deep(.controls-wrapper),
+.dock.is-disabled :deep(.dl-row) { opacity: 0.45; }
 
 /* Responsive */
+/* No .sidebar width override here: the inline (draggable) width would win over
+   it anyway, and below 768px MobileApp renders instead of this layout. */
 @media (max-width: 768px) {
-  .sidebar { width: 200px; }
-  .floating-dock {
-    left: 12px;
-    right: 12px;
-    bottom: 12px;
+  .dock {
     flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
   }
 }
 </style>

@@ -1,17 +1,21 @@
 /* Shared theme tokens (light + dark).
    Applied via the `.cc-theme` class so BOTH the desktop layout and the mobile
-   layout — and every child that reads these vars (sidebar, dropdowns, language
-   switcher, floating islands …) — share a single source of truth. Toggling the
+   layout - and every child that reads these vars (sidebar, dropdowns, language
+   switcher, floating islands …), share a single source of truth. Toggling the
    `dark` class on the same element flips the whole tree. */
 .cc-theme {
-  --panel-bg: #edf0f4;          /* sidebar — soft gray chrome (distinct from the white bed) */
+  /* Must match THEME.light.bg in ThreeViewer.vue - it paints behind the WebGL
+     canvas, so any frame where the canvas doesn't cover the container (e.g.
+     mid-resize) shows this instead of the white page underneath. */
+  --viewer-bg: #dde1e7;
+  --panel-bg: #edf0f4;          /* sidebar's soft gray chrome (distinct from the white bed) */
   --card-bg: var(--panel-bg);   /* floating chrome (islands, top-right buttons, banner) = sidebar */
   --panel-border: rgba(0, 0, 0, 0.07);
   --panel-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
   --text-strong: #2c3e50;
   --text-muted: #7f8c8d;
   --track-bg: #dde1e7;
-  --ctrl-bg: #ffffff;           /* controls — white, pop on the gray sidebar */
+  --ctrl-bg: #ffffff;           /* controls - white, pop on the gray sidebar */
   --ctrl-hover: #eef1f5;
   --ctrl-border: #d4dae1;
   --dropdown-bg: #ffffff;       /* menus float as white cards above the sidebar */
@@ -21,18 +25,151 @@
 }
 
 .cc-theme.dark {
-  --panel-bg: #212327;          /* sidebar — chrome, darker than the bed */
+  --viewer-bg: #17181b;         /* matches THEME.dark.bg in ThreeViewer.vue */
+  --panel-bg: #212327;          /* sidebar's chrome, darker than the bed */
   --card-bg: var(--panel-bg);
   --panel-border: rgba(255, 255, 255, 0.07);
   --panel-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
   --text-strong: #e8eaed;
   --text-muted: #9aa0a6;
   --track-bg: #3a3d42;
-  --ctrl-bg: #33363b;           /* controls — lighter than the panel */
+  --ctrl-bg: #33363b;           /* controls: lighter than the panel */
   --ctrl-hover: #3c4046;
   --ctrl-border: #45494f;
   --dropdown-bg: #33363b;
   --dropdown-border: #45494f;
   --hover-bg: rgba(255, 255, 255, 0.06);
   --active-bg: rgba(0, 173, 198, 0.24);
+}
+
+/* ── Floating control column (top right) ────────────────────────────────────
+   Shared by ViewToggles, ThemeToggle and LanguageSwitcher so all three look
+   and behave identically: same round button, same hover hint flying out to
+   the left, same radio flyout. Global rather than scoped-per-component
+   precisely because it IS shared - three copies of this drift apart. */
+.vt-btn {
+  position: relative;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 1px solid var(--panel-border);
+  background: var(--card-bg);
+  color: var(--text-strong);
+  box-shadow: var(--panel-shadow);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+  transition: transform 0.15s ease, background 0.2s ease, color 0.2s ease;
+}
+.vt-btn:hover { transform: scale(1.08); }
+.vt-btn.active {
+  background: #00ADC6;
+  border-color: #00ADC6;
+  color: #fff;
+}
+
+.vt-icon { display: flex; }
+.vt-icon svg { width: 22px; height: 22px; display: block; }
+
+/* Hover hint - flies out to the LEFT so it never leaves the viewport edge. */
+.vt-tip {
+  position: absolute;
+  right: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%);
+  white-space: nowrap;
+  padding: 5px 9px;
+  border-radius: 6px;
+  background: var(--card-bg);
+  color: var(--text-strong);
+  border: 1px solid var(--panel-border);
+  box-shadow: var(--panel-shadow);
+  font-size: 12px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+.vt-btn:hover .vt-tip { opacity: 1; }
+
+/* Radio flyout */
+.vt-popover { position: relative; flex-shrink: 0; }
+.vt-menu {
+  position: absolute;
+  right: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  min-width: 188px;
+  background: var(--dropdown-bg);
+  border: 1px solid var(--dropdown-border);
+  border-radius: 10px;
+  box-shadow: var(--panel-shadow);
+}
+.vt-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  color: var(--text-strong);
+  font-size: 13px;
+  text-align: left;
+  white-space: nowrap;
+}
+.vt-item:hover { background: var(--hover-bg); }
+/* Radio indicator (the options in a flyout are mutually exclusive). */
+.vt-radio {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1.5px solid var(--ctrl-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.vt-radio::after {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #00ADC6;
+  transform: scale(0);
+  transition: transform 0.15s ease;
+}
+.vt-item.active .vt-radio { border-color: #00ADC6; }
+.vt-item.active .vt-radio::after { transform: scale(1); }
+
+/* Slide + fade, shared by every flyout in the column. The menu flies out to
+   the left of its button and stays vertically centred (translateY(-50%), the
+   resting transform above); the enter/leave states just add a horizontal
+   offset to that same transform rather than replacing it, so the menu keeps
+   sliding in from the direction it actually opens in. */
+.vt-menu.slide-fade-enter-active,
+.vt-menu.slide-fade-leave-active {
+  transition: transform 0.2s cubic-bezier(0.22, 0.61, 0.36, 1), opacity 0.16s ease;
+}
+.vt-menu.slide-fade-enter-from,
+.vt-menu.slide-fade-leave-to {
+  transform: translate(14px, -50%);
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vt-btn,
+  .vt-menu.slide-fade-enter-active,
+  .vt-menu.slide-fade-leave-active { transition: none; }
 }

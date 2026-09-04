@@ -1,8 +1,15 @@
 <template>
   <div class="m-app">
-    <!-- Floating controls (top-right) — the SAME components as the desktop view -->
-    <ThemeToggle :is-dark="isDark" @toggle="$emit('toggle-theme')" />
-    <LanguageSwitcher />
+    <!-- Floating controls (top-right) - the SAME components as the desktop
+         view, in their own absolutely-positioned row. They used to sit in the
+         page flow with the language switcher nudged into place via top/right on
+         a position:relative element; a wrapper is what the desktop layout
+         already does (.top-right-controls) and it survives the components
+         changing their own class names. -->
+    <div class="m-floating">
+      <ThemeToggle :is-dark="isDark" @toggle="$emit('toggle-theme')" />
+      <LanguageSwitcher />
+    </div>
 
     <!-- Header -->
     <header class="m-header">
@@ -15,11 +22,17 @@
 
     <!-- Upload -->
     <button class="m-upload" :disabled="isLoading" @click="handleUpload">
-      {{ isLoading ? t('uploading') : t('upload') }}
+      <svg class="upload-icon" viewBox="0 0 24 24" width="19" height="19" aria-hidden="true">
+        <path d="M12 13V3m0 0l-4 4m4-4l4 4" fill="none" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+        <path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" fill="none" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" />
+      </svg>
+      <span>{{ isLoading ? t('uploading') : t('upload') }}</span>
     </button>
     <p v-if="fileName" class="m-filename">{{ fileName }}</p>
 
-    <!-- Printer / Material / Thickness — shared styled dropdowns -->
+    <!-- Printer / Material / Thickness - shared styled dropdowns -->
     <div class="m-fields">
       <ProfileDropdown
         :model-value="selectedCutter"
@@ -37,19 +50,21 @@
         :placeholder="t('selectMaterial')"
         label-key="name"
         item-key="name"
-        :detail="(f) => `${f.thicknesses.length} ${f.thicknesses.length === 1 ? t('option') : t('options')}`"
+        :detail="familyDetail"
         searchable
         :search-placeholder="t('searchMaterial')"
         :empty-text="t('noMatch')"
       />
+      <!-- Hidden unless the material offers a real choice - see the same
+           dropdown in Sidebar.vue for why. -->
       <ProfileDropdown
+        v-if="hasThicknessChoice(selectedFamily)"
         :model-value="selectedThickness"
         @update:model-value="onThickness"
-        :items="selectedFamily?.thicknesses || []"
-        :placeholder="selectedFamily ? t('selectThickness') : '—'"
+        :items="selectedFamily.thicknesses"
+        :placeholder="t('selectThickness')"
         label-key="label"
         item-key="id"
-        :disabled="!selectedFamily"
       />
     </div>
 
@@ -105,7 +120,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { loadProfiles, speedsFor } from '../profiles'
+import { loadProfiles, speedsFor, hasThicknessChoice, familyDetail } from '../profiles'
 import { buildToolpath, fixColors, removeWhite, computeDoubleRemoval, PATH_ORDER_ALGORITHMS } from '../toolpath'
 import { getStoredViewSettings, setStoredViewSetting } from '../viewSettings'
 import { t } from '../translations'
@@ -132,7 +147,7 @@ const selectedThickness = ref(null)
 
 const data = ref(null)          // current (edited) extraction objects
 
-// Path-order algorithm — selectable for debugging/comparison, see toolpath.js.
+// Path-order algorithm - selectable for debugging/comparison, see toolpath.js.
 const PATH_ORDER_LABEL_KEY = { file: 'pathOrderFile', nn: 'pathOrderNn', '2opt': 'pathOrder2opt' }
 const pathOrderOptions = computed(() =>
   PATH_ORDER_ALGORITHMS.map((id) => ({ id, name: t(PATH_ORDER_LABEL_KEY[id]) })))
@@ -184,7 +199,7 @@ const fmtTime = (sec) => {
 }
 const formattedTime = computed(() => fmtTime(stats.value?.totalTime))
 
-// Per-operation breakdown (time only — slim for mobile). Colours mirror the viewer.
+// Per-operation breakdown (time only - slim for mobile). Colours mirror the viewer.
 const rows = computed(() => {
   const s = stats.value
   if (!s) return []
@@ -317,6 +332,10 @@ onMounted(async () => {
   height: 100vh;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  /* Same theming as ProfileDropdown's .dropdown-list: the default scrollbar
+     ignores dark mode entirely otherwise. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--ctrl-border) transparent;
   padding: 18px 16px 40px;
   background: var(--panel-bg);
   color: var(--text-strong);
@@ -326,11 +345,26 @@ onMounted(async () => {
   gap: 14px;
   transition: background 0.25s ease;
 }
+.m-app::-webkit-scrollbar { width: 8px; }
+.m-app::-webkit-scrollbar-track { background: transparent; }
+.m-app::-webkit-scrollbar-thumb {
+  background: var(--ctrl-border);
+  border-radius: 4px;
+}
+.m-app::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
-/* Put the reused language switcher on the same row as the theme toggle (left of
-   it), so the two floating controls share the top-right corner and clear the
-   upload button below. */
-.m-app :deep(.lang-switcher) { top: 16px; right: 64px; }
+/* The two reused controls share the top-right corner and clear the header +
+   upload button below (see .m-header's padding-right). */
+.m-floating {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 30;
+  display: flex;
+  flex-direction: row-reverse;   /* theme toggle stays rightmost, as before */
+  align-items: center;
+  gap: 8px;
+}
 
 /* Header */
 .m-header {
@@ -347,6 +381,10 @@ onMounted(async () => {
 
 /* Upload */
 .m-upload {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
   width: 100%;
   padding: 16px;
   background: var(--red);
@@ -360,6 +398,7 @@ onMounted(async () => {
 }
 .m-upload:hover:not(:disabled) { background: #B8031A; }
 .m-upload:disabled { opacity: 0.6; cursor: default; }
+.m-upload .upload-icon { display: block; flex-shrink: 0; }
 .m-filename {
   margin: -6px 2px 0;
   font-size: 12px;

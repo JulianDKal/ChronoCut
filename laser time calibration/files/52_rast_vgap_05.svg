@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="140.000mm" height="95.000mm" viewBox="0 0 140.000 95.000">
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="1016.000mm" height="711.000mm" viewBox="0 0 1016.000 711.000">
   <!-- 52_rast_vgap_05 -->
-  <rect x="20.000" y="20.000" width="80.000" height="25.000" fill="#00FF00" stroke="none"/>
-  <rect x="20.000" y="50.000" width="80.000" height="25.000" fill="#00FF00" stroke="none"/>
+  <rect x="5.000" y="5.000" width="80.000" height="25.000" fill="#00FF00" stroke="none"/>
+  <rect x="5.000" y="35.000" width="80.000" height="25.000" fill="#00FF00" stroke="none"/>
 </svg>

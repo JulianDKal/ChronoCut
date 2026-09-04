@@ -1,6 +1,6 @@
 // Shared persistence for the floating view-toggle settings (travel, rulers,
 // raster display mode, debug modes, curve fidelity) and the path-order
-// algorithm — same pattern as theme.js: a single source of truth so
+// algorithm - same pattern as theme.js: a single source of truth so
 // components that can mount independently of each other (ThreeViewer,
 // ViewToggles, Sidebar, MobileApp) never come back up out of sync with what
 // was last chosen. All of it lives under one localStorage key as a JSON blob,
@@ -15,11 +15,13 @@ export const DEFAULT_VIEW_SETTINGS = {
   rasterMode: 'lines',       // 'lines' | 'block' | 'outline'
   debugColors: false,
   speedGradient: false,
-  tessellation: 'normal',    // 'normal' | 'fine' | 'ultra' — see TESSELLATION_TOL_BY_KEY
+  tessellation: 'normal',    // 'normal' | 'fine' | 'ultra' - see TESSELLATION_TOL_BY_KEY
   pathOrder: DEFAULT_PATH_ORDER,
+  // What the "reset view" button frames: 'all' | 'lasered' | 'visible'.
+  focusMode: 'all',
 }
 
-// Curve-fidelity presets (mm bezier-flatness tolerance) — the single source
+// Curve-fidelity presets (mm bezier-flatness tolerance) - the single source
 // both ViewToggles.vue (menu options) and ThreeViewer.vue (restoring on
 // mount) resolve a stored 'tessellation' key against.
 export const TESSELLATION_TOL_BY_KEY = { normal: 0.2, fine: 0.05, ultra: 0.01 }
@@ -38,5 +40,5 @@ export function setStoredViewSetting(key, value) {
     const cur = getStoredViewSettings()
     cur[key] = value
     localStorage.setItem(VIEW_SETTINGS_KEY, JSON.stringify(cur))
-  } catch { /* private browsing, quota, ... — setting just won't persist */ }
+  } catch { /* private browsing, quota, ... - setting just won't persist */ }
 }

@@ -7,7 +7,7 @@
 //
 import { CALIBRATION } from './calibration'
 
-// Geometry is kept as PRIMITIVES — a path is a list of line ('L') and cubic
+// Geometry is kept as PRIMITIVES - a path is a list of line ('L') and cubic
 // bezier ('C') primitives. Beziers stay beziers all the way through; they are
 // only tessellated (adaptively, by arc length) at render time. Coordinates are
 // in viewer space (mm, origin top-left, y negative downward). The print head
@@ -23,17 +23,17 @@ export const SPEED_MM_S = {
   travel: 250,   // rapid moves between paths (no beam)
 }
 
-// Raster (boustrophedon engraving) parameters — green and grayscale content is
+// Raster (boustrophedon engraving) parameters - green and grayscale content is
 // engraved by scanning horizontally back and forth over its bounding box.
-const RASTER_PITCH    = 0.6   // mm between scan lines (vertical step) — fallback only
-// Overscan is NOT a fixed distance: the calibration shows a fixed TIME per scan
-// line (constant across 10/20/40 % speed), so the equivalent distance scales with
-// the raster speed. rasterOverscanFor() derives it; see calibration.js.
+const RASTER_PITCH    = 0.6   // mm between scan lines (vertical step) - fallback only
+// Overscan is NOT a fixed distance: it is the turnaround run-out, so it grows
+// with the SQUARE of the raster speed (~0,9 mm per side at 20 %, ~22 mm at
+// 100 %). rasterOverscanFor() derives it; see calibration.js.
 const RASTER_MAX_ROWS = 20000 // safety cap. Was 1200, which silently capped every
                               // region taller than ~50 mm at 600 dpi (pitch grew,
                               // rows dropped) and made the estimate far too fast.
 const RASTER_GREEN    = '#00a000'  // colour of green-region scan lines
-// Marker colour for grayscale-image (bitmap) scan lines — NOT the actual
+// Marker colour for grayscale-image (bitmap) scan lines - NOT the actual
 // rendered colour. A fixed hex can't be right in both themes (white vanishes
 // on the light theme's white bed), so the viewer swaps this for a real
 // per-theme colour (white on dark, dark gray on light) at render time. Kept
@@ -50,8 +50,8 @@ const SMALL_PART_MM = 1e6
 // Grid-fall heuristic: a part this small (≈ 1.5 × 0.8 cm or less) can drop through
 // the cutter's honeycomb/slat grid; retrieving it costs time. These get the
 // separate "may fall through" warning and the optional viewer highlight.
-const TINY_PART_W = 15   // mm — larger side
-const TINY_PART_H = 8    // mm — shorter side
+const TINY_PART_W = 15   // mm - larger side
+const TINY_PART_H = 8    // mm, shorter side
 
 export const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y)
 
@@ -68,13 +68,14 @@ export function rampedTime(L, v, a) {
 }
 
 // Direction change (between consecutive segments) sharper than this forces the
-// head to a full stop — the velocity profile restarts from rest. Catches raster
+// head to a full stop - the velocity profile restarts from rest. Catches raster
 // turnarounds (180°) and the vertical step between scan rows (90°), which is
 // exactly where a real machine decelerates, stops and reverses.
 //
-// MEASURED (see calibration.js): the threshold is ~20°, not 60°. A 12-sided
-// polygon (30° corners) is charged full corner cost by the machine, a 48-gon
-// (7.5°) is not. At 60° the 30°–43° corners were silently free.
+// MEASURED (see calibration.js): the threshold is ~28°, not 60°. The angle
+// series 45–49 varies ONLY the bend angle at constant length and corner count:
+// 8°/14°/20°/26° all cost 139 s optimised, 32° jumps to 154 s. A 12-sided
+// polygon (30° corners) is charged full corner cost, a 48-gon (7.5°) is not.
 const CORNER_COS = Math.cos((CALIBRATION.cornerAngleDeg * Math.PI) / 180)
 
 // Extra time (s) per full stop, on top of the kinematic v/a ramp. Applied at
@@ -87,20 +88,33 @@ const CORNER_PENALTY = CALIBRATION.cornerPenalty
 export const accelFor = (m, accel) => (m.category === 'raster' ? 0 : accel)
 
 // Same reasoning for the per-stop penalty: a scan row's turnaround is already
-// paid for inside rasterLineOverhead, so charging CORNER_PENALTY again at each
-// row end (2 per row) would double-count it — worth ~75 s on an 80 mm tall
-// region at 600 dpi.
+// paid for by the overscan run-out plus the per-line overhead, so charging
+// CORNER_PENALTY again at each row end (2 per row) would double-count it -
+// worth ~80 s on an 80 mm tall region at 600 dpi.
 export const cornerPenaltyFor = (m) => (m.category === 'raster' ? 0 : CORNER_PENALTY)
 
-// Fixed cost of starting a new vector, charged on the travel that precedes it.
-export const moveExtraTime = (m) => (m.kind === 'travel' ? CALIBRATION.vectorStartPenalty : 0)
+// Extra time (s) charged on a move beyond the traversal of its own geometry:
+//   travel - the fixed cost of starting the next vector;
+//   raster - the SPEED-INDEPENDENT part of the per-scan-line overhead plus the
+//            Y feed, once per scan row (m.rows). The speed-DEPENDENT part is
+//            carried by the geometry instead, as overscan (see below).
+export const moveExtraTime = (m) => {
+  if (m.kind === 'travel') return m.home ? 0 : CALIBRATION.vectorStartPenalty   // home leg starts no vector
+  if (m.category === 'raster' && m.rows) {
+    return m.rows * (CALIBRATION.rasterLineBase + CALIBRATION.rasterYFeed * m.pitch)
+  }
+  return 0
+}
 
-// Half the per-line overhead expressed as distance, so a scan row of content
-// width `span` costs span/v + rasterLineOverhead + yFeed*pitch, exactly matching
-// the calibration, while the emitted geometry stays consistent with the timing.
-function rasterOverscanFor(speed, pitch) {
-  const perLine = CALIBRATION.rasterLineOverhead + CALIBRATION.rasterYFeed * pitch
-  return (perLine * speed) / 2
+// Overscan per side: the run-out the head needs to turn around at the end of a
+// scan row. This is the part of the per-line overhead that scales with the
+// raster speed - charging it as DISTANCE (rather than as time) keeps the drawn
+// geometry and the estimate consistent: 2*over/v is exactly rasterLineRamp*v.
+// The fixed part of the overhead stays a time and is added in moveExtraTime;
+// folding it into the distance too (as this did before 60–100 % were measured)
+// would draw >100 mm of overscan per side at 100 % raster speed.
+function rasterOverscanFor(speed) {
+  return (CALIBRATION.rasterLineRamp * speed * speed) / 2
 }
 
 // Speed (mm/s) at distance s along a run of length S that starts and ends at
@@ -156,7 +170,7 @@ export function movePolyline(m) {
  * at rest AND comes to rest at every sharp corner, so each raster scan line
  * accelerates from / decelerates to its turnaround. (Without this, a whole
  * serpentine is one constant-speed move and the acceleration value barely changes
- * the estimate — which is why accel "had no effect".)
+ * the estimate - which is why accel "had no effect".)
  *
  * @returns {{ durs:number[], speeds:number[], total:number }}
  *   durs[i] / speeds[i] = duration (s) and average speed (mm/s) of segment i.
@@ -298,7 +312,7 @@ const PURE_GREEN = '#00ff00'
  */
 export function fixColors(data) {
   // Only clone (i.e. "change") an object when the colour ACTUALLY differs from the
-  // pure target — so re-running is idempotent and the changed-count is truthful
+  // pure target - so re-running is idempotent and the changed-count is truthful
   // (a file that is already pure red/blue/green reports 0 fixed).
   return data.map((obj) => {
     if (obj.type === 'l' || obj.type === 'c') {
@@ -323,19 +337,19 @@ export function fixColors(data) {
 //
 // Two properties matter and are guaranteed by construction:
 //   1. A primitive that survives untouched is emitted from its OWN coordinates,
-//      never rebuilt from a group average — so unaffected geometry is bit-identical
+//      never rebuilt from a group average - so unaffected geometry is bit-identical
 //      and closed contours keep closing.
 //   2. Grouping compares every member against a fixed group REPRESENTATIVE, not
 //      against its neighbour. Neighbour-chaining used to let hundreds of lines at
 //      wildly different angles collapse into one "collinear" group.
 //
-// Returns { data, removed } — removed carries the dropped pieces as line segments
+// Returns { data, removed } - removed carries the dropped pieces as line segments
 // for the viewer's highlight.
 
-const OVERLAP_EPS = 0.02    // mm — ignore sub-epsilon slivers
-const ANGLE_TOL   = 0.012   // rad ≈ 0.7° — max tilt against the group representative
-const C_TOL       = 0.08    // mm — max perpendicular distance from the representative
-const CURVE_TOL   = 0.05    // mm — how close two beziers must run to count as one
+const OVERLAP_EPS = 0.02    // mm - ignore sub-epsilon slivers
+const ANGLE_TOL   = 0.012   // rad ≈ 0.7°, max tilt against the group representative
+const C_TOL       = 0.08    // mm, max perpendicular distance from the representative
+const CURVE_TOL   = 0.05    // mm, how close two beziers must run to count as one
 
 // ── 1D interval helpers ───────────────────────────────────────────────────────
 function mergeIv(list) {
@@ -454,7 +468,7 @@ function nearestT(p, pt) {
   return { t: bt, dist: Math.sqrt(bd) }
 }
 
-// Unit tangent of `p` at parameter `t` (finite difference — plenty accurate at
+// Unit tangent of `p` at parameter `t` (finite difference - plenty accurate at
 // the mm scale these curves live at).
 function tangentAt(p, t, h = 1e-3) {
   const t0 = Math.max(0, t - h), t1 = Math.min(1, t + h)
@@ -465,7 +479,7 @@ function tangentAt(p, t, h = 1e-3) {
   return len > 1e-9 ? { x: dx / len, y: dy / len } : { x: 0, y: 0 }
 }
 // Two curves running near-parallel within CROSS_ANGLE_TOL of each other (in
-// either direction — a retraced sub-curve may be reversed) at their closest
+// either direction - a retraced sub-curve may be reversed) at their closest
 // point. Below this, a match is a genuine crossing, not shared geometry.
 const CROSS_ANGLE_COS = Math.cos((20 * Math.PI) / 180)   // 20°
 
@@ -476,7 +490,7 @@ const CROSS_ANGLE_COS = Math.cos((20 * Math.PI) / 180)   // 20°
 // about how the two curves were split. Position alone isn't enough, though: two
 // DIFFERENT curves that cross (e.g. two circles offset by less than CURVE_TOL at
 // their nearest point, like intentionally overlapping rings) can dip within
-// tolerance over a real arc near the crossing, not just a single point — so a
+// tolerance over a real arc near the crossing, not just a single point - so a
 // match also requires the TANGENT directions to be parallel (or antiparallel).
 // A transversal crossing has clearly different tangents and is correctly
 // rejected; a genuinely shared/retraced curve has matching tangents throughout.
@@ -499,10 +513,10 @@ function refineBoundary(cp, other, tOff, tOn) {   // bisect towards the "on" sid
 
 // A genuine shared/duplicate arc is always ANCHORED at one of cp's own
 // endpoints: real duplicates come from copying a whole curve, or splitting a
-// path and duplicating a piece — either way, the shared range starts where cp
+// path and duplicating a piece - either way, the shared range starts where cp
 // starts or ends where cp ends (verified against both passing overlap tests
 // below). A match that sits entirely in cp's INTERIOR, touching neither end,
-// is a coincidence, not shared geometry — and coincidences do happen: two
+// is a coincidence, not shared geometry - and coincidences do happen: two
 // circles offset by a small fraction of their radius cross at a shallow angle
 // (this pair crosses at ~3°), so position AND tangent direction both stay
 // within tolerance for a real stretch near each crossing even though the
@@ -511,7 +525,7 @@ function refineBoundary(cp, other, tOff, tOn) {   // bisect towards the "on" sid
 // exact crossing point the gap is mathematically zero regardless of tolerance.
 //
 // "Anchored" is measured as physical distance (mm) from cp's own start/end
-// POINT, not parameter distance — a parameter epsilon doesn't scale with the
+// POINT, not parameter distance - a parameter epsilon doesn't scale with the
 // curve's real length (a tiny parameter slice of a large arc is still several
 // hundredths of a mm, which is exactly the scale a false crossing sits at).
 const ANCHOR_MM = OVERLAP_EPS   // same "negligible" scale used for line slivers
@@ -520,7 +534,7 @@ const ANCHOR_MM = OVERLAP_EPS   // same "negligible" scale used for line slivers
 // primitives of the very same shape (e.g. a circle built from 4 quarter-arc
 // beziers) share an exact point by construction, and are typically drawn G1-
 // continuous there (matching tangents), so the same shallow-angle situation
-// happens again — briefly, right at that shared joint — even though nothing
+// happens again - briefly, right at that shared joint - even though nothing
 // is actually redundant (the two arcs just meet, they don't overlap). A real
 // duplicate/retraced arc runs alongside the other curve for a substantial
 // stretch; a joint's false match dies out within a fraction of a mm. Requiring
@@ -691,7 +705,7 @@ export function removeWhite(data, lumThreshold = WHITE_LUM) {
 
 // ── Detect helpers (preview highlight for Fix Colors / Remove White) ──────────
 // Return { count, segs } where segs are line segments [{x1,y1,x2,y2}] of the
-// elements that WOULD change — mirroring computeDoubleRemoval's `removed`, so the
+// elements that WOULD change - mirroring computeDoubleRemoval's `removed`, so the
 // viewer can highlight them before the edit is applied.
 function strokeSegs(o) {
   if (o.type === 'l') return [{ x1: o.x1, y1: o.y1, x2: o.x2, y2: o.y2 }]
@@ -741,6 +755,34 @@ export function detectRemoveWhite(data, lumThreshold = WHITE_LUM) {
     else if (o.type === 'fp' && hexLum(o.fill) > lumThreshold) { count++; segs.push(...fpSegs(o.path)) }
   }
   return { count, segs }
+}
+
+// ── Remove Tiny Segments ──────────────────────────────────────────────────────
+// Sub-0.005mm lines/curves are pure extraction noise (stray near-zero-length
+// pieces some SVG/PDF sources leave behind) - real detail never gets that
+// small, but a job full of them can trip up the printer's own path optimiser.
+// Filled (raster) content is left alone: a "tiny segment" there is just a
+// normal fine detail of the bitmap, not an artefact.
+const TINY_SEGMENT_LEN = 0.005   // mm
+
+function strokeLen(o) {
+  const segs = strokeSegs(o)
+  let L = 0
+  for (const s of segs) L += Math.hypot(s.x2 - s.x1, s.y2 - s.y1)
+  return L
+}
+
+export function detectTinySegments(data, minLen = TINY_SEGMENT_LEN) {
+  let count = 0
+  const segs = []
+  for (const o of data) {
+    if ((o.type === 'l' || o.type === 'c') && strokeLen(o) < minLen) { count++; segs.push(...strokeSegs(o)) }
+  }
+  return { count, segs }
+}
+
+export function removeTinySegments(data, minLen = TINY_SEGMENT_LEN) {
+  return data.filter((o) => !((o.type === 'l' || o.type === 'c') && strokeLen(o) < minLen))
 }
 
 // ── Rotate the whole design 90° ───────────────────────────────────────────────
@@ -856,7 +898,7 @@ function subdivideCubic(p0, p1, p2, p3, tol, depth, out) {
   subdivideCubic(m, p123, p23, p3, tol, depth - 1, out)
 }
 
-// Adaptive bezier flatness tolerance (mm) — how far a chord may bend away from
+// Adaptive bezier flatness tolerance (mm) - how far a chord may bend away from
 // the true curve before it gets subdivided again. Lower = more segments = a
 // closer-fitting (and heavier) polyline. Exposed via setTessellationTolerance()
 // so the UI can trade fidelity for performance on simple files; every call to
@@ -871,7 +913,7 @@ export function setTessellationTolerance(mm) {
  * Tessellate a primitive into a polyline using ADAPTIVE (flatness-based)
  * subdivision: a cubic is split only where it bends away from a straight chord
  * by more than `tol` mm. Gentle curves get a handful of segments, tight ones
- * more — far fewer points than the old fixed/length-based count.
+ * more - far fewer points than the old fixed/length-based count.
  *
  * @returns {Array<{x,y}>} points including both endpoints (line → 2 points)
  */
@@ -892,13 +934,13 @@ function primLength(p) {
 
 // Reconstruct connected paths from the flat l/c stream, keeping each item as a
 // primitive. Primitives link by matching ENDPOINTS (a spatial lookup), not by
-// sitting next to each other in the array — so reconstruction is independent of
+// sitting next to each other in the array - so reconstruction is independent of
 // item order. This matters because edits like Remove Doubles rebuild the line
 // list grouped by shared direction/offset (not by connectivity), which used to
 // shatter closed polygons into unclosed fragments and silently zero out the
 // small-/tiny-part warnings. Order-independent linking fixes that for any
 // edit or extraction order.
-const LINK_TOL = 0.01   // mm — matches the old adjacency tolerance
+const LINK_TOL = 0.01   // mm - matches the old adjacency tolerance
 
 function reconstructPaths(data) {
   const prims = []
@@ -1105,10 +1147,10 @@ function rasterRegion(rows, lastPos, pitch, rasterSpeed = 0) {
   // Colour is decided PER BAND (this contiguous run of rows), not for the whole
   // file: a photo bitmap and an unrelated green icon elsewhere in the design
   // both end up in the raster pass, but only rows a green loop actually crosses
-  // should render green — otherwise a single green shape anywhere in the file
+  // should render green - otherwise a single green shape anywhere in the file
   // tinted every bitmap green too.
   const color = rows.some(r => r.green) ? RASTER_GREEN : RASTER_GRAY
-  const over = rasterOverscanFor(rasterSpeed, pitch || RASTER_PITCH)
+  const over = rasterOverscanFor(rasterSpeed)
   const topY = rows[0].y
   const botY = rows[rows.length - 1].y
   let bMinX = Infinity, bMaxX = -Infinity
@@ -1137,6 +1179,8 @@ function rasterRegion(rows, lastPos, pitch, rasterSpeed = 0) {
   // the region as one block matching the extent of the scan lines.
   moves.push({
     kind: 'engrave', color, category: 'raster', prims,
+    // rows/pitch drive the per-scan-line overhead in moveExtraTime().
+    rows: rows.length, pitch: pitch || RASTER_PITCH,
     bbox: { minX: bMinX, maxX: bMaxX, minY: botY, maxY: topY },
   })
   const end = prims.length ? primEnd(prims[prims.length - 1]) : start
@@ -1145,24 +1189,37 @@ function rasterRegion(rows, lastPos, pitch, rasterSpeed = 0) {
 
 // Path-order optimisation ("Pfadreihenfolge optimieren").
 //
-// MEASURED: on the five real production files the travel budget that the Job
-// Manager's own estimate leaves over is 15/84/79/53/158 s. Plain file order,
-// top-left-first, left-to-right and band-wise sweeps all need 2–5× more travel
-// than that, so the machine clearly minimises travel. Greedy nearest-neighbour
-// lands at 19/83/102/69/171 s — close, but still ABOVE the budget on 4 of 5
-// files, i.e. the machine finds a better tour than greedy. Adding a 2-opt
-// improvement pass gets to 19/78/98/66/163 s and matches the budget far better.
+// MEASURED: the machine clearly minimises travel - 36_order_natural and
+// 37_order_shuffled are the SAME geometry in a favourable and a maximally
+// unfavourable file order (97 s vs 131 s unoptimised) and land on exactly the
+// same 84 s once "Optimieren" is on. Plain file order is therefore out.
+//
+// How GOOD its tour is: greedy nearest-neighbour, not 2-opt. On the four real
+// production files with a known preset, 'nn' lands at -3,1/-0,3/-0,2/-6,9 %
+// against the Job Manager (Ø 2,6 %), '2opt' at -4,2/-2,0/-1,4/-7,7 %
+// (Ø 3,8 %) - i.e. 2-opt finds a better tour than the machine does and
+// therefore estimates too fast. 38_order_nntrap, built so that greedy drives
+// 1428 mm further than 2-opt, is a tie (+1,4 % against -1,3 %) and does not
+// decide it on its own.
+//
+// This reverses the earlier call for '2opt'. That one rested on how much travel
+// time the machine's estimate leaves over once the cut time is subtracted - and
+// that leftover budget is computed with the per-vector start penalty and the
+// return-to-home leg, both of which changed in the 2025-09 recalibration. With
+// the corrected constants the budget argument points the other way. 'nn' is
+// also the conservative direction: it estimates slightly high, not low.
 const TSP_MAX_PATHS = 4000   // above this, greedy only (2-opt is O(n²) per pass)
 const TSP_MAX_PASSES = 20
 
 // Selectable path-order algorithms, exposed in the UI for debugging/comparison
 // against what the printer's own optimiser does:
-//   'file' — no reordering, cut in file order (the pre-optimisation baseline)
-//   'nn'   — greedy nearest-neighbour only
-//   '2opt' — nearest-neighbour seed + 2-opt improvement (closest match to the
-//            printer's measured travel budget — see PATH_ORDER_ALGORITHMS below)
+//   'file' - no reordering, cut in file order (the pre-optimisation baseline)
+//   'nn'   - greedy nearest-neighbour, the closest match to the printer's own
+//            optimiser (see the MEASURED note above) - the default
+//   '2opt' - nearest-neighbour seed + 2-opt improvement; a BETTER tour than the
+//            printer finds, so it estimates slightly too fast
 export const PATH_ORDER_ALGORITHMS = ['file', 'nn', '2opt']
-export const DEFAULT_PATH_ORDER = '2opt'
+export const DEFAULT_PATH_ORDER = 'nn'
 
 function nearestNeighbourOrder(paths, startPos) {
   const pool = [...paths]
@@ -1209,12 +1266,10 @@ function twoOptImprove(seq, startPos) {
   return seq
 }
 
-// MEASURED (see PATH_ORDER_ALGORITHMS docs at call site / CALIBRATION.md): on the
-// five real production files the travel budget that the printer's own estimate
-// leaves over is 15/84/79/53/158 s. Plain file order needs 2–5× more travel, so
-// the printer clearly minimises travel. Greedy 'nn' lands at 19/83/102/69/171 s —
-// close, but still ABOVE the budget on 4 of 5 files. '2opt' gets to
-// 19/78/98/66/163 s and matches the budget far better — the current default.
+// MEASURED (see PATH_ORDER_ALGORITHMS docs above / CALIBRATION.md): the printer
+// minimises travel, but only about as well as greedy nearest-neighbour - '2opt'
+// finds a shorter tour than it does and estimates ~1,2 points too fast on the
+// real production files. 'nn' is the default.
 function optimizeOrder(paths, startPos, algo = DEFAULT_PATH_ORDER) {
   if (algo === 'file' || paths.length < 2) return paths
   const seq = nearestNeighbourOrder(paths, startPos)
@@ -1232,7 +1287,7 @@ function optimizeOrder(paths, startPos, algo = DEFAULT_PATH_ORDER) {
  * @param {Array} data       extraction objects (l / c / fp / img / mbox)
  * @param {Object} opts
  * @param {string} [opts.optimize='file']  path-order algorithm within each vector
- *   phase — one of PATH_ORDER_ALGORITHMS ('file' | 'nn' | '2opt'); a falsy value
+ *   phase - one of PATH_ORDER_ALGORITHMS ('file' | 'nn' | '2opt'); a falsy value
  *   is treated as 'file' for backwards compatibility with the old boolean flag.
  * @returns {{ moves: Array, stats: Object }}
  *   moves: ordered list of either
@@ -1252,8 +1307,8 @@ export function buildToolpath(data, { optimize = 'file', speeds = SPEED_MM_S, ra
   const rasterPaths = allPaths.filter(p => p.category === 'green' || p.category === 'gray')
   const vectorPaths = allPaths.filter(p => p.category !== 'green' && p.category !== 'gray')
 
-  // Raster content: ALL of it — green + grayscale vectors/fills AND grayscale
-  // bitmaps — goes into ONE scanline pass. The machine sweeps each row from its
+  // Raster content: ALL of it - green + grayscale vectors/fills AND grayscale
+  // bitmaps, goes into ONE scanline pass. The machine sweeps each row from its
   // leftmost to its rightmost ink, so horizontally separated content in the same
   // rows shares a sweep (no proximity clustering) while a genuinely empty
   // vertical band produces no rows at all and thus splits the job by itself.
@@ -1294,14 +1349,25 @@ export function buildToolpath(data, { optimize = 'file', speeds = SPEED_MM_S, ra
   let lastPos = { x: 0, y: 0 } // print head starts at the top-left corner
 
   // ── Engrave phase 1: raster bands (green + grayscale) ──────────────────────
+  //
+  // NO travel into (or between) raster bands. There is no separate rapid to
+  // charge: the head reaches the start of a scan row during the sweep, and the
+  // step to the next band is the Y feed, which rasterYFeed already prices in.
+  //
+  // MEASURED, 54_rast_overscan: a 1 mm wide bar engraved at x = 500 mm
+  // (200 dpi, 100 %). Charging the approach at 250 mm/s overshoots its 29 s
+  // display by 5,9 %, charging approach and way back by 13,1 %; charging
+  // neither lands at -0,7 %. And 52/53 (same two blocks, 5 mm vs 60 mm apart)
+  // are both 379 s - crossing the gap costs nothing.
   for (const band of bands) {
     const r = rasterRegion(band, lastPos, rasterPitch || RASTER_PITCH,
                            speeds.raster ?? speeds.engrave)
-    for (const m of r.moves) moves.push(m)
+    for (const m of r.moves) if (m.kind !== 'travel') moves.push(m)
     lastPos = r.end
   }
 
   // ── Vector phases: red engrave, blue cut, other ───────────────────────────
+  let didVector = false
   for (const cat of ['red', 'blue', 'other']) {
     let group = vectorPaths.filter(p => p.category === cat)
     if (group.length === 0) continue
@@ -1315,13 +1381,28 @@ export function buildToolpath(data, { optimize = 'file', speeds = SPEED_MM_S, ra
       }
       moves.push({ kind: kindOf(cat), color: p.color, category: cat, prims: p.prims })
       lastPos = p.end
+      didVector = true
     }
   }
 
-  // NO return-to-home move: the machine's own estimate does not include it. The
-  // three dashes files (17–19) are the evidence — they end far from the origin
-  // (275/395/595 mm), and counting the way back overshoots their displayed time
-  // by 6–13 %, while leaving it out lands every one of them within ~1,5 %.
+  // Return to home. The machine's estimate DOES include it: 42_home_near and
+  // 43_home_far are the same 20 mm square, once in the start corner (5 s) and
+  // once in the opposite corner (13 s). The 8 s difference is TWICE the ~1080 mm
+  // approach at 250 mm/s (8,6 s), not once (4,3 s). Across all 134 runs the
+  // return leg improves the fit from Ø 1,18 % to Ø 0,51 %.
+  //
+  // This reverses the earlier reading of the dashes files (17–19): under the old
+  // parameter set the return leg overshot them, but that was the 69 ms per-vector
+  // start penalty compensating for a missing term. With the penalty refitted to
+  // 35 ms the dashes land within 1,8 % WITH the return leg.
+  //
+  // Only after a VECTOR phase - a raster-only job pays no travel at all, see the
+  // raster loop above.
+  if (CALIBRATION.returnToHome && didVector && (lastPos.x !== 0 || lastPos.y !== 0)) {
+    // `home` marks it as NOT starting a vector, so it carries no start penalty.
+    moves.push({ kind: 'travel', home: true, color: '#888888', a: { ...lastPos }, b: { x: 0, y: 0 } })
+    lastPos = { x: 0, y: 0 }
+  }
 
   // Stats + time estimate. Length AND time are tracked per operation type, with
   // raster engrave (green/grayscale serpentine) split out from vector engrave

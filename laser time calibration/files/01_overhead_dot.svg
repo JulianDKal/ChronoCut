@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="21.000mm" height="21.000mm" viewBox="0 0 21.000 21.000">
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="1016.000mm" height="711.000mm" viewBox="0 0 1016.000 711.000">
   <!-- 01_overhead_dot -->
-  <circle cx="10.500" cy="10.500" r="0.5" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="5.500" cy="5.500" r="0.5" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

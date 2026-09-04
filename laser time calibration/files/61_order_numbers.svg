@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="1016.000mm" height="711.000mm" viewBox="0 0 1016.000 711.000">
+  <!-- 61_order_numbers (seed 10) -->
+  <!-- 01 bei (478.4, 619.8) mm -->
+  <path d="M 479.874 627.299 L 487.374 619.799 L 494.874 627.299 L 494.874 642.299 L 487.374 649.799 L 479.874 642.299 L 479.874 627.299" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 503.274 626.399 L 509.874 619.799 L 509.874 649.799" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 02 bei (656.5, 542.6) mm -->
+  <path d="M 658.031 550.107 L 665.531 542.607 L 673.031 550.107 L 673.031 565.107 L 665.531 572.607 L 658.031 565.107 L 658.031 550.107" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 680.531 549.207 L 688.031 542.607 L 695.531 549.207 L 680.531 572.607 L 695.531 572.607" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 03 bei (436.4, 305.9) mm -->
+  <path d="M 437.930 313.444 L 445.430 305.944 L 452.930 313.444 L 452.930 328.444 L 445.430 335.944 L 437.930 328.444 L 437.930 313.444" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 460.430 307.444 L 473.930 307.444 L 465.530 319.444 L 475.430 326.344 L 467.930 335.944 L 460.430 332.344" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 04 bei (196.4, 61.9) mm -->
+  <path d="M 197.852 69.403 L 205.352 61.903 L 212.852 69.403 L 212.852 84.403 L 205.352 91.903 L 197.852 84.403 L 197.852 69.403" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 231.452 61.903 L 220.352 82.303 L 235.352 82.303" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 231.452 73.903 L 231.452 91.903" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 05 bei (38.1, 672.8) mm -->
+  <path d="M 39.613 680.305 L 47.113 672.805 L 54.613 680.305 L 54.613 695.305 L 47.113 702.805 L 39.613 695.305 L 39.613 680.305" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 77.113 673.405 L 64.213 673.405 L 62.413 685.405 L 70.213 683.605 L 77.113 691.405 L 70.213 702.805 L 62.113 699.805" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 06 bei (873.7, 92.5) mm -->
+  <path d="M 875.191 100.020 L 882.691 92.520 L 890.191 100.020 L 890.191 115.020 L 882.691 122.520 L 875.191 115.020 L 875.191 100.020" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 911.191 94.020 L 902.191 94.020 L 897.691 106.020 L 897.691 116.520 L 905.191 122.520 L 912.691 116.520 L 912.691 111.120 L 905.191 106.020 L 897.691 110.520" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 07 bei (280.0, 546.7) mm -->
+  <path d="M 281.460 554.162 L 288.960 546.662 L 296.460 554.162 L 296.460 569.162 L 288.960 576.662 L 281.460 569.162 L 281.460 554.162" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 303.960 547.262 L 318.960 547.262 L 309.660 576.662" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 08 bei (371.8, 471.2) mm -->
+  <path d="M 373.270 478.709 L 380.770 471.209 L 388.270 478.709 L 388.270 493.709 L 380.770 501.209 L 373.270 493.709 L 373.270 478.709" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 403.270 485.009 L 396.070 479.009 L 403.270 471.809 L 410.470 479.009 L 403.270 485.009 L 396.070 492.809 L 403.270 501.209 L 410.470 492.809 L 403.270 485.009" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 09 bei (283.2, 235.0) mm -->
+  <path d="M 284.703 242.520 L 292.203 235.020 L 299.703 242.520 L 299.703 257.520 L 292.203 265.020 L 284.703 257.520 L 284.703 242.520" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 322.203 251.520 L 314.703 252.420 L 307.203 247.620 L 307.203 241.020 L 314.703 235.020 L 322.203 241.020 L 322.203 257.520 L 314.703 265.020 L 308.703 262.620" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 10 bei (49.2, 349.0) mm -->
+  <path d="M 51.557 355.603 L 58.157 349.003 L 58.157 379.003" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 73.157 356.503 L 80.657 349.003 L 88.157 356.503 L 88.157 371.503 L 80.657 379.003 L 73.157 371.503 L 73.157 356.503" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 11 bei (42.2, 55.7) mm -->
+  <path d="M 44.619 62.317 L 51.219 55.717 L 51.219 85.717" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 67.119 62.317 L 73.719 55.717 L 73.719 85.717" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 12 bei (728.3, 329.7) mm -->
+  <path d="M 730.676 336.250 L 737.276 329.650 L 737.276 359.650" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 752.276 336.250 L 759.776 329.650 L 767.276 336.250 L 752.276 359.650 L 767.276 359.650" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 13 bei (754.2, 111.6) mm -->
+  <path d="M 756.597 118.197 L 763.197 111.597 L 763.197 141.597" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 778.197 113.097 L 791.697 113.097 L 783.297 125.097 L 793.197 131.997 L 785.697 141.597 L 778.197 137.997" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 14 bei (649.7, 95.9) mm -->
+  <path d="M 652.142 102.492 L 658.742 95.892 L 658.742 125.892" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 684.842 95.892 L 673.742 116.292 L 688.742 116.292" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 684.842 107.892 L 684.842 125.892" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 15 bei (566.9, 16.5) mm -->
+  <path d="M 569.296 23.058 L 575.896 16.458 L 575.896 46.458" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 605.896 17.058 L 592.996 17.058 L 591.196 29.058 L 598.996 27.258 L 605.896 35.058 L 598.996 46.458 L 590.896 43.458" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 16 bei (529.3, 266.1) mm -->
+  <path d="M 531.732 272.732 L 538.332 266.132 L 538.332 296.132" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 566.832 267.632 L 557.832 267.632 L 553.332 279.632 L 553.332 290.132 L 560.832 296.132 L 568.332 290.132 L 568.332 284.732 L 560.832 279.632 L 553.332 284.132" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 17 bei (119.4, 265.9) mm -->
+  <path d="M 121.794 272.516 L 128.394 265.916 L 128.394 295.916" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 143.394 266.516 L 158.394 266.516 L 149.094 295.916" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 18 bei (831.5, 301.2) mm -->
+  <path d="M 833.906 307.807 L 840.506 301.207 L 840.506 331.207" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 863.006 315.007 L 855.806 309.007 L 863.006 301.807 L 870.206 309.007 L 863.006 315.007 L 855.806 322.807 L 863.006 331.207 L 870.206 322.807 L 863.006 315.007" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 19 bei (423.8, 111.9) mm -->
+  <path d="M 426.226 118.523 L 432.826 111.923 L 432.826 141.923" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 462.826 128.423 L 455.326 129.323 L 447.826 124.523 L 447.826 117.923 L 455.326 111.923 L 462.826 117.923 L 462.826 134.423 L 455.326 141.923 L 449.326 139.523" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 20 bei (822.2, 628.6) mm -->
+  <path d="M 823.718 635.210 L 831.218 628.610 L 838.718 635.210 L 823.718 658.610 L 838.718 658.610" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 846.218 636.110 L 853.718 628.610 L 861.218 636.110 L 861.218 651.110 L 853.718 658.610 L 846.218 651.110 L 846.218 636.110" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 21 bei (288.8, 664.6) mm -->
+  <path d="M 290.269 671.240 L 297.769 664.640 L 305.269 671.240 L 290.269 694.640 L 305.269 694.640" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 313.669 671.240 L 320.269 664.640 L 320.269 694.640" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 22 bei (904.0, 377.2) mm -->
+  <path d="M 905.486 383.763 L 912.986 377.163 L 920.486 383.763 L 905.486 407.163 L 920.486 407.163" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 927.986 383.763 L 935.486 377.163 L 942.986 383.763 L 927.986 407.163 L 942.986 407.163" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 23 bei (926.0, 609.9) mm -->
+  <path d="M 927.506 616.450 L 935.006 609.850 L 942.506 616.450 L 927.506 639.850 L 942.506 639.850" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 950.006 611.350 L 963.506 611.350 L 955.106 623.350 L 965.006 630.250 L 957.506 639.850 L 950.006 636.250" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 24 bei (629.7, 372.6) mm -->
+  <path d="M 631.179 379.246 L 638.679 372.646 L 646.179 379.246 L 631.179 402.646 L 646.179 402.646" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 664.779 372.646 L 653.679 393.046 L 668.679 393.046" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 664.779 384.646 L 664.779 402.646" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- 25 bei (288.7, 395.0) mm -->
+  <path d="M 290.160 401.566 L 297.660 394.966 L 305.160 401.566 L 290.160 424.966 L 305.160 424.966" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 327.660 395.566 L 314.760 395.566 L 312.960 407.566 L 320.760 405.766 L 327.660 413.566 L 320.760 424.966 L 312.660 421.966" stroke="#0000FF" stroke-width="0.026" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -28,12 +28,12 @@ import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import * as THREE from 'three'
 import eventBus from '../eventBus'
-import { buildToolpath, isGreen, isRasterColor, SPEED_MM_S, fixColors, computeDoubleRemoval, rotateData, removeWhite, detectFixColors, detectRemoveWhite, rampSegments, annotateRuns, movePolyline, accelFor, cornerPenaltyFor, moveExtraTime, DEFAULT_PATH_ORDER, dist, setTessellationTolerance, RASTER_BITMAP_MARK } from '../toolpath'
+import { buildToolpath, isGreen, isRasterColor, categorize, SPEED_MM_S, fixColors, computeDoubleRemoval, rotateData, removeWhite, detectFixColors, detectRemoveWhite, detectTinySegments, removeTinySegments, rampSegments, annotateRuns, movePolyline, accelFor, cornerPenaltyFor, moveExtraTime, DEFAULT_PATH_ORDER, dist, setTessellationTolerance, RASTER_BITMAP_MARK } from '../toolpath'
 import { getStoredDark } from '../theme'
 import { getStoredViewSettings, TESSELLATION_TOL_BY_KEY } from '../viewSettings'
 
 // Restored once here (module scope, evaluated on first import) rather than
-// read individually per variable below — same "self-source on mount, don't
+// read individually per variable below - same "self-source on mount, don't
 // only wait for a broadcast" reasoning as getStoredDark(), so this stays
 // correct even if ViewToggles ever mounts after ThreeViewer or not at all.
 const restoredViewSettings = getStoredViewSettings()
@@ -53,7 +53,7 @@ let canvWidth, canvHeight
 const VIEW_REF_HALF_H = 400  // world half-height (mm) of the frustum at zoom 1
 let contentBox = null        // bbox of the last loaded design (for re-framing)
 
-// Cutter state — default to Edgar 1000×700 mm
+// Cutter state - default to Edgar 1000×700 mm
 let cutterW = 1000
 let cutterH = 700
 
@@ -75,6 +75,17 @@ let lastRulerSig = ''      // redraw the rulers only when the view actually chan
 let tinyBoxes = []         // bounding boxes of parts small enough to fall through the grid
 let showTinyHighlight = false  // highlight those parts in the viewer (on demand)
 let tinyHighlightGroup = null
+
+// Per-colour (cut/vector-engrave/raster/other - mirrors the breakdown panel's
+// rows) view-only visibility, driven by the eye buttons on those rows in
+// DownloadComponent. Purely cosmetic: hidden kinds are skipped when building
+// the drawn geometry below, but the toolpath timeline (runTime/headRun) keeps
+// advancing through them unchanged, so the estimated time and the playback
+// clock never depend on what's currently shown.
+let hiddenKinds = new Set()
+// [{ k, minX, minY, maxX, maxY }] sorted by k = time bin index; see lasedBox().
+let revealBins = []
+let dragging = false   // true while the user is panning/zooming by hand
 
 // Head speeds + raster pitch from the selected printer/material (profiles.js).
 // Default to the placeholders until a material is chosen.
@@ -105,7 +116,7 @@ const adjustForTheme = ([r, g, b]) => {
   return [r, g, b]
 }
 // Bitmap raster scan lines carry a MARKER colour (toolpath.js's
-// RASTER_BITMAP_MARK), not a real one — a fixed hex can't work in both themes
+// RASTER_BITMAP_MARK), not a real one - a fixed hex can't work in both themes
 // (white vanishes on the light theme's white bed, a mid gray looks washed out
 // on the dark theme's dark bed). Resolve it to a real colour per theme instead.
 const lineRGB = (hex) => {
@@ -124,7 +135,7 @@ const themedColor = (hex) => { const [r, g, b] = lineRGB(hex); return new THREE.
 //   segCount : number of line segments (debug / stats)
 let playback = null
 
-// Playback clock — the reveal is advanced per render frame by real elapsed time
+// Playback clock - the reveal is advanced per render frame by real elapsed time
 // (×speed) for smooth motion, instead of coarse integer slider steps.
 let pbPlaying = false
 let pbSpeed   = 1
@@ -139,7 +150,11 @@ const initThree = () => {
   canvHeight = container.value.clientHeight
 
   renderer = new THREE.WebGLRenderer({ canvas: canvas.value, antialias: true })
-  renderer.setSize(canvWidth, canvHeight)
+  // updateStyle=false: keep the canvas's own `width/height: 100%` CSS instead
+  // of letting three pin it to a pixel size. While the sidebar is being
+  // dragged the container resizes every frame, and a canvas pinned to the
+  // PREVIOUS size leaves a strip of un-painted container for a frame.
+  renderer.setSize(canvWidth, canvHeight, false)
   container.value.appendChild(renderer.domElement)
   applyTheme()
 
@@ -162,6 +177,23 @@ const initThree = () => {
     RIGHT:  THREE.MOUSE.PAN,
   }
 
+  // Any hands-on interaction wins over a running camera flight - being unable
+  // to interrupt an animation is worse than not having one.
+  controls.addEventListener('start', () => { camFlight = null; dragging = true })
+  controls.addEventListener('end', () => { dragging = false })
+  // Render straight away while dragging instead of waiting for the next
+  // animation frame. OrbitControls already applies a pan synchronously inside
+  // its pointermove handler, so by the time this fires the camera is exact -
+  // only the PICTURE was a frame behind, which is what made the content look
+  // like it trails the cursor. Browsers coalesce pointermove to one per frame,
+  // so this does not multiply the render count.
+  controls.addEventListener('change', () => {
+    if (!dragging || !renderer) return
+    updateHeadMarker()
+    renderer.render(scene, camera)
+    drawRulers()
+  })
+
   headMarker = makeHeadMarker()
   scene.add(headMarker)
 
@@ -172,8 +204,8 @@ const initThree = () => {
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
 // Read the persisted preference directly (not just via the 'theme-changed' event)
-// so a fresh mount — e.g. coming back from the mobile layout, which unmounts and
-// remounts this component — always starts in sync with the rest of the UI.
+// so a fresh mount - e.g. coming back from the mobile layout, which unmounts and
+// remounts this component, always starts in sync with the rest of the UI.
 let isDark = getStoredDark()
 const THEME = {
   light: { bg: 0xdde1e7, bed: 0xffffff, border: 0xd0d4da },
@@ -207,38 +239,91 @@ const applyFrustum = () => {
   camera.top    =  VIEW_REF_HALF_H
   camera.bottom = -VIEW_REF_HALF_H
   camera.updateProjectionMatrix()
-  renderer.setSize(canvWidth, canvHeight)
+  renderer.setSize(canvWidth, canvHeight, false)   // see initThree for updateStyle=false
 }
 
 const bedBox = () => ({ minX: 0, maxX: cutterW, minY: -cutterH, maxY: 0 })
 
 // Centre the view on `box` and zoom so it fits with a little padding.
-// Reserve space at the bottom for the floating timeline/download dock so the
-// print area is never framed behind it.
-const BOTTOM_INSET_PX = 132
+//
+// Only things that genuinely FLOAT over the canvas get a reserved strip. The
+// playback/download dock no longer does (it sits in normal flow below the
+// viewer, so the container is already the free area, reserving for it here
+// as well used to push the workspace visibly too high). The top-right control
+// column still does float, so the workspace centres between the sidebar and
+// that column rather than the window edge: 42px of button + 16px of margin,
+// plus a little breathing room.
+const RIGHT_INSET_PX = 72
 
-const frameBox = (box, pad = 1.12) => {
-  if (!camera || !box || !isFinite(box.minX)) return
-  const cx = (box.minX + box.maxX) / 2
-  let   cy = (box.minY + box.maxY) / 2
+// Where the camera would have to sit for `box` to fill the usable area.
+const framingFor = (box, pad = 1.12) => {
+  const cx0 = (box.minX + box.maxX) / 2
+  const cy = (box.minY + box.maxY) / 2
   const bw = Math.max(1, box.maxX - box.minX)
   const bh = Math.max(1, box.maxY - box.minY)
   const aspect = canvWidth / canvHeight
   const viewW = VIEW_REF_HALF_H * aspect * 2
   const viewH = VIEW_REF_HALF_H * 2
-  // Fit into (and centre within) the area ABOVE the dock.
-  const inset = Math.min(BOTTOM_INSET_PX, canvHeight * 0.5)
-  const usableFrac = (canvHeight - inset) / canvHeight
-  camera.zoom = Math.min(viewW / (bw * pad), (viewH * usableFrac) / (bh * pad))
-  // Shift the centre down in world space (→ content moves up on screen) by half
-  // the reserved strip, so the box sits centred in the usable area.
-  const worldPerPx = viewH / (camera.zoom * canvHeight)
-  cy -= (inset / 2) * worldPerPx
+  // Fit into (and centre within) the area LEFT of the floating control column.
+  const inset = Math.min(RIGHT_INSET_PX, canvWidth * 0.4)
+  const usableFrac = (canvWidth - inset) / canvWidth
+  const zoom = Math.min((viewW * usableFrac) / (bw * pad), viewH / (bh * pad))
+  // Look at a point half the reserved strip to the RIGHT of the box centre, so
+  // the box lands centred in the usable area instead of the full canvas.
+  const worldPerPx = viewW / (zoom * canvWidth)
+  return { zoom, cx: cx0 + (inset / 2) * worldPerPx, cy }
+}
+
+const applyFraming = ({ zoom, cx, cy }) => {
+  camera.zoom = zoom
   camera.position.set(cx, cy, 5)
   camera.lookAt(cx, cy, 0)
   controls.target.set(cx, cy, 0)
   camera.updateProjectionMatrix()
   controls.update()
+}
+
+const frameBox = (box, pad = 1.12) => {
+  if (!camera || !box || !isFinite(box.minX)) return
+  camFlight = null            // a jump beats an in-flight animation
+  applyFraming(framingFor(box, pad))
+}
+
+// ── Animated framing ─────────────────────────────────────────────────────────
+// Same destination as frameBox, flown to instead of jumped to. Zoom is
+// interpolated GEOMETRICALLY (exp of the lerped log), not linearly: zoom is a
+// scale factor, so a linear ramp from 0.4 to 8 spends most of the flight
+// already zoomed in and lands in a rush. In log space every step scales the
+// view by the same factor, which is what reads as an even zoom.
+const FLIGHT_MS = 520
+let camFlight = null
+
+const easeInOutCubic = (u) => (u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2)
+
+const flyToBox = (box, pad = 1.12) => {
+  if (!camera || !box || !isFinite(box.minX)) return
+  const to = framingFor(box, pad)
+  const from = { zoom: camera.zoom, cx: controls.target.x, cy: controls.target.y }
+  // Already there (within a pixel and a per-mille of zoom): don't animate a
+  // no-op, it just looks like a stutter.
+  const worldPerPx = (VIEW_REF_HALF_H * (canvWidth / canvHeight) * 2) / (camera.zoom * canvWidth)
+  if (Math.abs(Math.log(to.zoom / from.zoom)) < 0.001 &&
+      Math.hypot(to.cx - from.cx, to.cy - from.cy) < worldPerPx) return
+  camFlight = { from, to, t0: performance.now() }
+}
+
+// Advanced once per frame from animate().
+const stepCamFlight = () => {
+  if (!camFlight) return
+  const u = Math.min(1, (performance.now() - camFlight.t0) / FLIGHT_MS)
+  const e = easeInOutCubic(u)
+  const { from, to } = camFlight
+  applyFraming({
+    zoom: Math.exp(Math.log(from.zoom) + (Math.log(to.zoom) - Math.log(from.zoom)) * e),
+    cx: from.cx + (to.cx - from.cx) * e,
+    cy: from.cy + (to.cy - from.cy) * e,
+  })
+  if (u >= 1) camFlight = null
 }
 
 // Bounding box of all loaded content (vectors, filled paths, images).
@@ -315,7 +400,7 @@ const drawCutterFrame = () => {
   // Soft drop shadow (bottom-left).
   group.add(makeBedShadow())
 
-  // Bed fill — white (light) / dark gray (dark).
+  // Bed fill - white (light) / dark gray (dark).
   const fill = new THREE.Mesh(
     new THREE.PlaneGeometry(cutterW, cutterH),
     new THREE.MeshBasicMaterial({ color: t.bed }),
@@ -377,11 +462,92 @@ const handleLinesUpdate = (lines) => {
   currentData = lines
   clearHighlight()
   showTinyHighlight = false                      // fresh design → drop the at-risk overlay
+  hiddenKinds.clear()                             // fresh design → every colour visible again
   drawObjects(lines, { resetPlayback: true })   // new design → timeline back to 0
   // Centre + fit the view on the freshly loaded design.
   contentBox = computeContentBBox(lines)
   frameBox(contentBox || bedBox())
   checkFit()
+}
+
+// Reset the view: re-centre + re-fit, flown to rather than snapped to.
+//
+//   all      - the whole design (or the bare bed if nothing is loaded), the
+//              same framing a fresh upload already gets
+//   lasered  - only what the playback head has already burned
+//   visible  - only the colours that are not hidden via the breakdown panel
+//
+// A mode with nothing to show (nothing lasered yet, every colour hidden) falls
+// back to the full design rather than framing an empty box.
+const handleResetView = (mode) => {
+  const box = (mode === 'lasered' && lasedBox(pbTime))
+           || (mode === 'visible' && visibleContentBBox())
+           || contentBox
+           || bedBox()
+  flyToBox(box)
+}
+
+// Bounding box of the content that is currently DRAWN, i.e. with the colours
+// hidden in the breakdown panel left out. Derived from the source objects with
+// the same kind mapping the draw pass uses, so it cannot drift from what is on
+// screen.
+const visibleContentBBox = () => {
+  if (!currentData || hiddenKinds.size === 0) return contentBox
+  const visible = currentData.filter((o) => {
+    if (o.type === 'img') return !hiddenKinds.has('raster')
+    if (o.type === 'fp') return !hiddenKinds.has(fpKindGroup(o.fill))
+    const cat = categorize(o.color || '#000000')
+    const group = cat === 'blue' ? 'cut' : cat === 'red' ? 'engrave'
+                : (cat === 'green' || cat === 'gray') ? 'raster' : 'other'
+    return !hiddenKinds.has(group)
+  })
+  return visible.length ? computeContentBBox(visible) : null
+}
+
+// Bounding box of everything already burned at time `t`.
+//
+// The reveal itself happens per-fragment on the GPU from a single uniform, so
+// there is no CPU-side list of "what is visible now" to read. Building one per
+// segment would cost megabytes on a big file, so drawObjects instead buckets
+// the drawn segments into fixed time bins (REVEAL_BIN_S) and keeps one box per
+// bin - a few thousand boxes for the longest jobs. Framing is padded anyway, so
+// the bin granularity is invisible.
+const REVEAL_BIN_S = 0.25
+const lasedBox = (t) => {
+  if (!revealBins || !revealBins.length || !(t > 0)) return null
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  const last = Math.floor(t / REVEAL_BIN_S)
+  for (const b of revealBins) {
+    if (b.k > last) break
+    if (b.minX < minX) minX = b.minX
+    if (b.minY < minY) minY = b.minY
+    if (b.maxX > maxX) maxX = b.maxX
+    if (b.maxY > maxY) maxY = b.maxY
+  }
+  return isFinite(minX) ? { minX, minY, maxX, maxY } : null
+}
+
+// ── Per-colour visibility (breakdown panel's eye buttons) ─────────────────────
+// Maps a toolpath move/fill to the same cut/engrave/raster/other bucket the
+// breakdown panel groups its rows by.
+const kindGroupOf = (m) => {
+  if (m.category === 'raster') return 'raster'
+  if (m.category === 'blue') return 'cut'
+  if (m.category === 'red') return 'engrave'
+  return 'other'
+}
+const fpKindGroup = (fillHex) => {
+  const cat = categorize(fillHex || '#000000')
+  if (cat === 'blue') return 'cut'
+  if (cat === 'red') return 'engrave'
+  if (cat === 'green' || cat === 'gray') return 'raster'
+  return 'other'
+}
+
+const handleKindVisibilityChanged = ({ kind, hidden } = {}) => {
+  if (!kind) return
+  if (hidden) hiddenKinds.add(kind); else hiddenKinds.delete(kind)
+  if (currentData) drawObjects(currentData)
 }
 
 // ── Rotate the whole design 90° (offered when it only fits rotated) ───────────
@@ -396,7 +562,7 @@ const handleRotateDesign = (dir) => {
 }
 
 // Toggle: optimise the cut order (mimic the printer's path optimiser) vs cut in
-// file order. Rebuilds from the retained data — no re-fetch.
+// file order. Rebuilds from the retained data - no re-fetch.
 const handleOptimizeChanged = (algo) => {
   optimizePath = algo || 'file'
   if (currentData) drawObjects(currentData)
@@ -409,7 +575,7 @@ const handleRasterModeChanged = (mode) => {
 }
 
 // Curve viewing fidelity (bezier flatness tolerance, mm). Only affects how
-// closely rendered curves hug the true path — not the time estimate.
+// closely rendered curves hug the true path - not the time estimate.
 const handleTessellationChanged = (tolMm) => {
   setTessellationTolerance(tolMm)
   if (currentData) drawObjects(currentData)
@@ -421,7 +587,7 @@ const handleDebugColorsChanged = (enabled) => {
   if (currentData) drawObjects(currentData)
 }
 
-// Toggle: show/hide the dotted travel "Leerwege". Cheap — just flips a shader
+// Toggle: show/hide the dotted travel "Leerwege". Cheap - just flips a shader
 // uniform; the segments stay in the geometry so timing/head position is intact.
 const handleShowTravelChanged = (enabled) => {
   showTravel = enabled !== false
@@ -429,7 +595,7 @@ const handleShowTravelChanged = (enabled) => {
 }
 
 // Toggle: colour segments by speed (debug acceleration). The gradient is computed
-// per-fragment in the shader, so this is just a uniform flip — no rebuild.
+// per-fragment in the shader, so this is just a uniform flip - no rebuild.
 const handleSpeedGradientChanged = (enabled) => {
   speedGradient = !!enabled
   if (lineMaterial) lineMaterial.uniforms.uGradient.value = speedGradient ? 1 : 0
@@ -447,6 +613,7 @@ const handleEditDetect = ({ action }) => {
   if (action === 'doubles')      { const r = computeDoubleRemoval(currentData); segs = r.removed; count = r.removed.length }
   else if (action === 'colors')  { const r = detectFixColors(currentData);      segs = r.segs;    count = r.count }
   else if (action === 'white')   { const r = detectRemoveWhite(currentData);     segs = r.segs;    count = r.count }
+  else if (action === 'tinysegs') { const r = detectTinySegments(currentData);   segs = r.segs;    count = r.count }
   drawHighlight(segs)
   eventBus.emit('edit-result', { action, count, phase: 'detect' })
 }
@@ -465,6 +632,10 @@ const handleEditApply = ({ action }) => {
   } else if (action === 'white') {
     const before = currentData.length
     currentData = removeWhite(currentData)
+    count = before - currentData.length
+  } else if (action === 'tinysegs') {
+    const before = currentData.length
+    currentData = removeTinySegments(currentData)
     count = before - currentData.length
   }
   clearHighlight()
@@ -535,7 +706,7 @@ const handleTinyHighlight = (on) => {
 // ── Playback progress ─────────────────────────────────────────────────────────
 // Reveals the toolpath as a solid line that grows *smoothly* along its length.
 // Whole completed segments are drawn, plus a partial leading segment interpolated
-// to the exact head position — so the tip glides between vertices (cf. the old
+// to the exact head position - so the tip glides between vertices (cf. the old
 // program's draw_path_layer) instead of snapping vertex-by-vertex.
 // Reveal the toolpath up to time `target` (seconds). Draws all completed
 // segments plus a partial leading segment whose tip is interpolated to the exact
@@ -544,7 +715,7 @@ const revealAtTime = (target) => {
   const pb = playback
   if (!pb || pb.total <= 0) return
   // The GPU does the rest: every fragment with its time <= uProgress draws solid,
-  // the rest faint — so the reveal is exact and smooth from a single uniform.
+  // the rest faint - so the reveal is exact and smooth from a single uniform.
   const t = Math.min(pb.total, Math.max(0, target))
   for (const m of pb.materials) m.uniforms.uProgress.value = t
 }
@@ -638,7 +809,7 @@ const xyAtArc = (run, s) => {
 }
 
 // Head XY at toolpath time `t` (seconds): find the active run, invert the
-// velocity profile to an arc-length, then map that to a point — so the marker
+// velocity profile to an arc-length, then map that to a point - so the marker
 // accelerates/decelerates exactly like the shader reveal.
 const headPosAt = (t) => {
   const runs = playback ? playback.runs : null
@@ -694,6 +865,7 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
   // and are not part of the cut/travel playback ordering.
   data.forEach(obj => {
     if (obj.type === 'fp') {
+      if (hiddenKinds.has(fpKindGroup(obj.fill))) return
       // ShapePath handles multi-subpath correctly (holes in letters, etc.).
       // ShapePath has no closePath(); each moveTo starts a new subpath and
       // fills auto-close, so the 'Z' commands are intentionally ignored.
@@ -732,6 +904,7 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
         drawingGroup.add(new THREE.Mesh(geo, mat))
       }
     } else if (obj.type === 'img') {
+      if (hiddenKinds.has('raster')) return   // images are always raster-engraved content
       const texture = new THREE.TextureLoader().load(obj.data)
       // obj.x/obj.y is the top-left corner (x right, y down as negative). When the
       // design was rotated, obj.rot says by how much; the plane keeps the image's
@@ -751,8 +924,8 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
   const { moves, stats, tinyBoxes: tb } = buildToolpath(data, { optimize: optimizePath, speeds: currentSpeeds, rasterPitch: currentRasterPitch, accel: currentAccel })
   tinyBoxes = tb || []
 
-  // Expand moves into one ordered segment stream. The GEOMETRY stays minimal —
-  // a straight line is a single segment — and the velocity profile is evaluated
+  // Expand moves into one ordered segment stream. The GEOMETRY stays minimal:
+  // a straight line is a single segment, and the velocity profile is evaluated
   // PER FRAGMENT in the shader: each vertex carries its arc-length within the run
   // (aRunDist), the run length (aRunLen), the run's start time (aRunT0) and the
   // target speed (aSpeed). From those the shader derives both the reveal time
@@ -768,6 +941,22 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
   const dists    = []     // per vertex: world distance (mm) along the run (dashing)
   const segAccel = []     // per vertex: acceleration of the move (raster uses 0)
   const rasterBlocks = [] // { bbox, t0, t1, color } when raster is shown as block/outline
+  // Time-binned bounding boxes of the DRAWN, beam-on geometry - the input for
+  // "focus on what is already lasered" (see lasedBox).
+  const bins = new Map()
+  const bin = (t, x0, y0, x1, y1) => {
+    const k = Math.floor(Math.max(0, t) / REVEAL_BIN_S)
+    let b = bins.get(k)
+    if (!b) bins.set(k, (b = { k, minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }))
+    if (x0 < b.minX) b.minX = x0
+    if (x1 < b.minX) b.minX = x1
+    if (y0 < b.minY) b.minY = y0
+    if (y1 < b.minY) b.minY = y1
+    if (x0 > b.maxX) b.maxX = x0
+    if (x1 > b.maxX) b.maxX = x1
+    if (y0 > b.maxY) b.maxY = y0
+    if (y1 > b.maxY) b.maxY = y1
+  }
   const headRuns = []     // per run: { t0, T, S, v, pts[], cum[] } for the head marker
   let runTime = 0         // running time along the toolpath
   let headRun = null
@@ -776,6 +965,12 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
   for (const m of moves) {
     const speed = (m.category === 'raster' ? (currentSpeeds.raster ?? currentSpeeds.engrave)
                                            : currentSpeeds[m.kind]) || currentSpeeds.other || SPEED_MM_S.other
+    // View-only: a hidden colour's moves still run through the timeline below
+    // exactly as before (runTime/headRun keep advancing unconditionally) so
+    // the estimate and playback clock stay correct - only the geometry that
+    // would actually get DRAWN is skipped. Travel has its own dedicated
+    // toggle (showTravel), so it's never affected by this one.
+    const hidden = m.kind !== 'travel' && hiddenKinds.has(kindGroupOf(m))
 
     if (m.category === 'raster' && rasterMode !== 'lines' && m.bbox) {
       // Engrave region as a block (filled or outline-only): skip the serpentine
@@ -784,10 +979,20 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
       flushHeadRun()
       const dur = rampSegments(movePolyline(m), speed, accelFor(m, currentAccel),
                                cornerPenaltyFor(m)).total + moveExtraTime(m)
-      rasterBlocks.push({ bbox: m.bbox, t0: runTime, t1: runTime + dur, color: lineRGB(m.color) })
+      if (!hidden) {
+        rasterBlocks.push({ bbox: m.bbox, t0: runTime, t1: runTime + dur, color: lineRGB(m.color) })
+        // The block is revealed top-to-bottom over its span, so bin its rows
+        // rather than dumping the whole rectangle into the first bin.
+        const steps = Math.max(1, Math.ceil(dur / REVEAL_BIN_S))
+        for (let i = 0; i < steps; i++) {
+          const f0 = i / steps, f1 = (i + 1) / steps
+          bin(runTime + dur * f0, m.bbox.minX, m.bbox.maxY + (m.bbox.minY - m.bbox.maxY) * f0,
+                                  m.bbox.maxX, m.bbox.maxY + (m.bbox.minY - m.bbox.maxY) * f1)
+        }
+      }
       // Give the marker a run covering the block. Without one there is a time gap
       // with no run at all, and headPosAt falls back to the PREVIOUS run and parks
-      // the marker at its end — the head appears to jump ahead and sit there for
+      // the marker at its end - the head appears to jump ahead and sit there for
       // the whole engrave. Swept at constant speed (a = 0) over the real scan path.
       const bp = movePolyline(m)
       if (bp.length > 1) {
@@ -818,7 +1023,7 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
         // annotateRuns' timeline is authoritative: it also charges the per-corner
         // stop penalty BETWEEN runs, which `runTime += info.dur` alone does not
         // see. Without resyncing here, run t0s stop increasing monotonically and
-        // headPosAt's binary search picks the wrong run — the marker then jumps
+        // headPosAt's binary search picks the wrong run - the marker then jumps
         // ahead of the drawn line.
         runTime = t0run
         headRun = { t0: t0run, T: 0, S: info.S, v: speed,
@@ -827,20 +1032,25 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
       const rgb = debugColors ? [Math.random(), Math.random(), Math.random()] : baseRgb
       runTime += info.dur
       const p = pts[i], q = pts[i + 1]
-      vertices.push(p.x, p.y, 0, q.x, q.y, 0)
-      colors.push(rgb[0], rgb[1], rgb[2], rgb[0], rgb[1], rgb[2])
-      runDist.push(info.s0, info.s1)
-      runLen.push(info.S, info.S)
-      runT0.push(t0run, t0run)
-      segSpeed.push(speed, speed)
-      dashes.push(isTravel ? 1 : 0, isTravel ? 1 : 0)
-      dists.push(info.s0, info.s1)
-      segAccel.push(accelFor(m, currentAccel), accelFor(m, currentAccel))
+      if (!hidden) {
+        if (!isTravel) bin(runTime, p.x, p.y, q.x, q.y)   // runTime = Zeit am Segmentende
+        vertices.push(p.x, p.y, 0, q.x, q.y, 0)
+        colors.push(rgb[0], rgb[1], rgb[2], rgb[0], rgb[1], rgb[2])
+        runDist.push(info.s0, info.s1)
+        runLen.push(info.S, info.S)
+        runT0.push(t0run, t0run)
+        segSpeed.push(speed, speed)
+        dashes.push(isTravel ? 1 : 0, isTravel ? 1 : 0)
+        dists.push(info.s0, info.s1)
+        segAccel.push(accelFor(m, currentAccel), accelFor(m, currentAccel))
+      }
       headRun.pts.push(q); headRun.cum.push(info.s1); headRun.T += info.dur
     }
     runTime += moveExtraTime(m)   // keep the clock equal to stats.totalTime
   }
   flushHeadRun()
+  // Sorted by time bin so lasedBox() can stop at the first bin past the cursor.
+  revealBins = [...bins.values()].sort((a, b) => a.k - b.k)
 
   // ── Single toolpath line ──────────────────────────────────────────────────
   // One LineSegments holds the whole toolpath. A small shader colours each
@@ -1062,7 +1272,7 @@ const drawObjects = (data, { resetPlayback = false } = {}) => {
   // Publish stats (incl. segment count for the debug overlay).
   eventBus.emit('toolpath-stats', { ...stats, optimized: optimizePath, segments: segCount })
 
-  console.log(`Toolpath: ${moves.length} moves, ${segCount} segments — `
+  console.log(`Toolpath: ${moves.length} moves, ${segCount} segments - `
             + `cut ${stats.cutLen.toFixed(0)}mm, engrave ${stats.engraveLen.toFixed(0)}mm, `
             + `travel ${stats.travelLen.toFixed(0)}mm, ~${stats.totalTime.toFixed(1)}s `
             + `(optimize=${optimizePath})`)
@@ -1155,7 +1365,7 @@ const drawRulers = () => {
   ctx.lineWidth = 1
   ctx.font = '10px "Courier New", monospace'
 
-  // Top ruler — world X in [0, cutterW] only; tick at the top edge, number below.
+  // Top ruler - world X in [0, cutterW] only; tick at the top edge, number below.
   ctx.textAlign = 'center'
   ctx.textBaseline = 'top'
   ctx.beginPath()
@@ -1168,7 +1378,7 @@ const drawRulers = () => {
   }
   ctx.stroke()
 
-  // Left ruler — world Y in [-cutterH, 0] only; tick at the left edge, number right.
+  // Left ruler - world Y in [-cutterH, 0] only; tick at the left edge, number right.
   ctx.textAlign = 'left'
   ctx.textBaseline = 'middle'
   ctx.beginPath()
@@ -1203,6 +1413,7 @@ const animate = () => {
     emitTick()
   }
 
+  stepCamFlight()      // animated "reset view" flight, if one is running
   updateHeadMarker()   // follow the head (also keeps a constant on-screen size)
   controls.update()
   renderer.render(scene, camera)
@@ -1211,15 +1422,44 @@ const animate = () => {
 
 // ── Resize ────────────────────────────────────────────────────────────────────
 const handleResize = () => {
-  canvWidth  = container.value.clientWidth
-  canvHeight = container.value.clientHeight
+  if (!container.value || !renderer) return
+  const w = container.value.clientWidth
+  const h = container.value.clientHeight
+  if (!w || !h || (w === canvWidth && h === canvHeight)) return
+  canvWidth  = w
+  canvHeight = h
   applyFrustum()   // preserves current zoom/pan, just updates aspect
+
+  // Re-render synchronously, right here, don't wait for the next animate()
+  // tick. renderer.setSize() (inside applyFrustum) resizes the canvas's
+  // backing buffer, which clears it. The browser runs ResizeObserver
+  // callbacks (this one) AFTER that frame's requestAnimationFrame callbacks
+  // but BEFORE it paints, so if we leave the redraw to the next animate(),
+  // this frame paints with a freshly-cleared, blank buffer once, then the
+  // real content lands next frame. Dragging the sidebar fires this dozens of
+  // times a second, so that one-frame gap repeats continuously and reads as
+  // a flicker of the bare --viewer-bg colour. Rendering immediately closes
+  // the gap within the same frame.
+  updateHeadMarker()
+  controls.update()
+  renderer.render(scene, camera)
+  drawRulers()
 }
+
+// The container can change size without the WINDOW changing size, the dock
+// below it is in normal flow, so anything that alters its height resizes the
+// viewer. A window-resize listener alone would miss that and leave the canvas
+// stretched against a stale aspect.
+let resizeObs = null
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 onMounted(() => {
   initThree()
   window.addEventListener('resize', handleResize)
+  if (window.ResizeObserver && container.value) {
+    resizeObs = new ResizeObserver(handleResize)
+    resizeObs.observe(container.value)
+  }
   eventBus.on('lines-updated',      handleLinesUpdate)
   eventBus.on('cutter-selected',    handleCutterSelected)
   eventBus.on('speeds-changed',     handleSpeedsChanged)
@@ -1233,6 +1473,8 @@ onMounted(() => {
   eventBus.on('speed-gradient-changed', handleSpeedGradientChanged)
   eventBus.on('rulers-changed',     handleRulersChanged)
   eventBus.on('tiny-highlight-changed', handleTinyHighlight)
+  eventBus.on('reset-view',         handleResetView)
+  eventBus.on('kind-visibility-changed', handleKindVisibilityChanged)
   eventBus.on('edit-detect',        handleEditDetect)
   eventBus.on('edit-apply',         handleEditApply)
   eventBus.on('edit-cancel',        handleEditCancel)
@@ -1244,6 +1486,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleResize)
+  resizeObs?.disconnect()
+  resizeObs = null
   eventBus.off('lines-updated',      handleLinesUpdate)
   eventBus.off('cutter-selected',    handleCutterSelected)
   eventBus.off('speeds-changed',     handleSpeedsChanged)
@@ -1257,6 +1501,8 @@ onBeforeUnmount(() => {
   eventBus.off('speed-gradient-changed', handleSpeedGradientChanged)
   eventBus.off('rulers-changed',     handleRulersChanged)
   eventBus.off('tiny-highlight-changed', handleTinyHighlight)
+  eventBus.off('reset-view',         handleResetView)
+  eventBus.off('kind-visibility-changed', handleKindVisibilityChanged)
   eventBus.off('edit-detect',        handleEditDetect)
   eventBus.off('edit-apply',         handleEditApply)
   eventBus.off('edit-cancel',        handleEditCancel)

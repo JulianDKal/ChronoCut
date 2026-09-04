@@ -39,7 +39,7 @@ async def create_pdf_from_json(objects: List[Dict[str, Any]] = Body(...)):
 
     The body is the same object list produced by /pdf_extraction (l / c / fp / img
     / mbox), but possibly after Fix Colors / Remove Doubles. The output PDF
-    reproduces everything the source had — vectors, text outlines and images —
+    reproduces everything the source had (vectors, text outlines and images),
     just corrected.
     """
     if not objects:

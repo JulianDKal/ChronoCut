@@ -1,7 +1,7 @@
 <template>
   <div class="playback-container">
     <div class="controls-wrapper">
-      <!-- Play / Pause — drawn as SVG rather than the ▶/⏸ text glyphs: those
+      <!-- Play / Pause - drawn as SVG rather than the ▶/⏸ text glyphs: those
            come from the system font and their glyph bounding boxes are rarely
            centred the same way across platforms (same reason the language
            flags are inline SVG, not emoji). A drawn shape centres exactly. -->
@@ -15,7 +15,10 @@
         </svg>
       </button>
 
-      <!-- Current time -->
+      <!-- Elapsed only. The TOTAL used to sit at the right end of the timeline,
+           but it is the very same stats.totalTime the download card shows as
+           its headline figure a few pixels further right, the same number
+           twice, in two formats. The estimate card is the one place for it. -->
       <span class="time-label">{{ formatTime(currentTime) }}</span>
 
       <!-- Timeline -->
@@ -38,12 +41,9 @@
         </div>
       </div>
 
-      <!-- Total time -->
-      <span class="time-label">{{ formatTime(totalTime) }}</span>
-
       <!-- Speed dropdown: fixed presets + a custom value. Styled to match the
            sidebar's material/cutter dropdown (ProfileDropdown), just flipped
-           to open upward — it lives at the bottom of the screen, so opening
+           to open upward - it lives at the bottom of the screen, so opening
            down would run off-screen. -->
       <div class="speed-control" ref="speedRef">
         <span class="speed-label">{{ t('speed') }}</span>
@@ -58,37 +58,43 @@
 
         <!-- Teleported to the app's theme-scoped portal root (not <body>):
              the playback island clips overflow (for its rounded corners), so
-             a child-positioned menu would get cut off however it opened —
+             a child-positioned menu would get cut off however it opened,
              but body is outside .cc-theme, which is where --dropdown-bg etc.
              are defined, so plain <body> would render an unstyled menu.
              Fixed-positioned + measured in JS instead. -->
+        <!-- Slides out from behind the toggle rather than popping into place
+             (same motion as the download breakdown panel and the other
+             dropdowns), in whichever direction it actually opens: up from
+             below when dir-up, down from above when dir-down. -->
         <Teleport to="#cc-portal-root" defer>
-          <div
-            class="speed-menu"
-            ref="menuRef"
-            v-show="speedOpen"
-            :class="{ 'dir-up': openUp, 'dir-down': !openUp }"
-            :style="menuStyle"
-          >
-            <button
-              v-for="p in SPEED_PRESETS"
-              :key="p"
-              class="speed-item"
-              :class="{ active: speed === p }"
-              @click="choosePreset(p)"
-            >{{ p }}x</button>
-            <input
-              ref="customInputRef"
-              type="number"
-              min="0.1"
-              step="0.1"
-              class="speed-custom-input"
-              :placeholder="t('customSpeed')"
-              v-model="customSpeedInput"
-              @keydown.enter="applyCustomSpeed"
-              @click.stop
-            />
-          </div>
+          <Transition name="slide-fade" :duration="220">
+            <div
+              class="speed-menu"
+              ref="menuRef"
+              v-show="speedOpen"
+              :class="{ 'dir-up': openUp, 'dir-down': !openUp }"
+              :style="menuStyle"
+            >
+              <button
+                v-for="p in SPEED_PRESETS"
+                :key="p"
+                class="speed-item"
+                :class="{ active: speed === p }"
+                @click="choosePreset(p)"
+              >{{ p }}x</button>
+              <input
+                ref="customInputRef"
+                type="number"
+                min="0.1"
+                step="0.1"
+                class="speed-custom-input"
+                :placeholder="t('customSpeed')"
+                v-model="customSpeedInput"
+                @keydown.enter="applyCustomSpeed"
+                @click.stop
+              />
+            </div>
+          </Transition>
         </Teleport>
       </div>
     </div>
@@ -106,11 +112,11 @@ const progress = ref(0)     // 0..100, reflects the head position on the toolpat
 const speed = ref(1.0)
 const isDragging = ref(false)
 
-const totalTime = ref(0)    // seconds — from toolpath stats
+const totalTime = ref(0)    // seconds - from toolpath stats
 const currentTime = computed(() => (progress.value / 100) * totalTime.value)
 
 // Speed is picked from a small dropdown (fixed presets + a free-form custom
-// value) rather than a slider — presets cover the "watch it fly by" range;
+// value) rather than a slider - presets cover the "watch it fly by" range;
 // custom covers everything else.
 const SPEED_PRESETS = [0.5, 1, 2, 4, 8, 16]
 const speedOpen = ref(false)
@@ -119,11 +125,11 @@ const menuRef = ref(null)
 const customInputRef = ref(null)
 const customSpeedInput = ref('')
 // The menu is teleported out of the island (see template) because it clips
-// overflow for its rounded corners — a child-positioned menu would get cut
+// overflow for its rounded corners - a child-positioned menu would get cut
 // off whichever way it opened. Position it in the viewport instead, flipped
 // to whichever side (above/below the toggle) actually has room. It touches
 // the toggle with zero gap (like ProfileDropdown's top:100%) so the two look
-// like one seamless control — just flipped, opening up instead of down.
+// like one seamless control - just flipped, opening up instead of down.
 const menuStyle = ref({ position: 'fixed', top: '-9999px', left: '-9999px' })
 const openUp = ref(true)
 
@@ -133,7 +139,7 @@ const positionSpeedMenu = () => {
   const b = btn.getBoundingClientRect()
   const m = menuRef.value
   // Same width as the toggle (like ProfileDropdown's menu matching its own
-  // toggle) rather than a fixed min-width — it was noticeably wider than the
+  // toggle) rather than a fixed min-width - it was noticeably wider than the
   // "16x ▾" button before.
   openUp.value = b.top - m.offsetHeight > 0
   const top = openUp.value ? b.top - m.offsetHeight : b.bottom
@@ -146,11 +152,14 @@ const speedLabel = computed(() => {
   return Number.isInteger(s) ? String(s) : String(Math.round(s * 100) / 100)
 })
 
-// Format time as MM:SS
+// M:SS, growing to H:MM:SS past the hour, same rule as the estimate on the
+// download card, so the two read-outs never disagree about their format.
 const formatTime = (seconds) => {
-  const mins = Math.floor(seconds / 60)
-  const secs = Math.floor(seconds % 60)
-  return `${mins}:${secs.toString().padStart(2, '0')}`
+  const total = Math.floor(seconds || 0)
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const ss = String(total % 60).padStart(2, '0')
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`
 }
 
 // ── Inbound events ────────────────────────────────────────────────────────────
@@ -235,25 +244,37 @@ const handleSliderMouseUp   = () => { isDragging.value = false }
 </script>
 
 <style scoped>
+/* A bare group sitting directly on the dock, no box of its own. The dock is
+   already the container; giving this a border/background too would wrap the
+   controls a second time. Its own --ctrl-bg controls (the speed dropdown)
+   then sit on --panel-bg chrome, which is the app's normal relationship and
+   what makes them read as controls.
+
+   It states its own height rather than stretching to the row, so it and the
+   download group sit level without either being able to drag the other. */
 .playback-container {
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  min-height: 42px;
   display: flex;
   align-items: center;     /* vertically centre the single control row */
-  padding: 12px 18px;
+  padding: 0 4px;
   background: transparent;
 }
 
 .controls-wrapper {
   display: flex;
   align-items: center;     /* timeline + speed slider sit on one line */
-  gap: 16px;
+  gap: 14px;
   width: 100%;
 }
 
-/* Play Button */
+/* Play Button, 40px, not 48. It is the exploratory control, not the primary
+   action; Download is. Shrinking it also lets the whole dock be slimmer. */
 .play-btn {
-  width: 48px;
-  height: 48px;
+  width: 40px;
+  height: 40px;
   flex-shrink: 0;
   border-radius: 50%;
   background: #00ADC6;
@@ -334,7 +355,7 @@ const handleSliderMouseUp   = () => { isDragging.value = false }
   position: relative;
 }
 
-/* Timeline knob — same size/shadow as the speed-slider thumb for consistency. */
+/* Timeline knob - same size/shadow as the speed-slider thumb for consistency. */
 .playback-progress::after {
   content: '';
   position: absolute;
@@ -348,7 +369,7 @@ const handleSliderMouseUp   = () => { isDragging.value = false }
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
-/* Speed Control — a small dropdown (fixed presets + a custom value) */
+/* Speed Control - a small dropdown (fixed presets + a custom value) */
 .speed-control {
   position: relative;
   flex-shrink: 0;
@@ -363,8 +384,8 @@ const handleSliderMouseUp   = () => { isDragging.value = false }
   white-space: nowrap;
 }
 
-/* Toggle mirrors .dropdown-toggle (ProfileDropdown) — same colours/border/
-   radius — but flattens its TOP corners when open (the menu attaches above
+/* Toggle mirrors .dropdown-toggle (ProfileDropdown) - same colours/border/
+   radius, but flattens its TOP corners when open (the menu attaches above
    it), the mirror image of the sidebar dropdown flattening its bottom. */
 .speed-toggle {
   display: flex;
@@ -405,12 +426,17 @@ const handleSliderMouseUp   = () => { isDragging.value = false }
 .speed-toggle .arrow.rotated { transform: rotate(180deg); }
 
 /* Mirrors .dropdown-menu (ProfileDropdown): same background/border/shadow,
-   touching the toggle with zero gap so together they read as one control —
+   touching the toggle with zero gap so together they read as one control,
    just flipped, so it's the BOTTOM edge that's seamless (border-bottom:none,
    only the top corners rounded) instead of the top edge. position/top/left/
-   width come from the inline :style (computed in JS, see positionSpeedMenu —
+   width come from the inline :style (computed in JS, see positionSpeedMenu:
    width matches the toggle button exactly). */
 .speed-menu {
+  /* Same latent bug as ProfileDropdown's .dropdown-menu (see its CSS note):
+     teleported to #cc-portal-root, a sibling of .app-container rather than a
+     descendant, so it falls back to :root's font-family instead of the
+     app's. Never flagged here specifically, but it's the identical cause. */
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
   background: var(--dropdown-bg);
   border: 1px solid var(--dropdown-border);
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
@@ -424,6 +450,26 @@ const handleSliderMouseUp   = () => { isDragging.value = false }
 .speed-menu.dir-down {
   border-top: none;
   border-radius: 0 0 8px 8px;
+}
+
+/* Slide direction follows however the menu actually opened: up from below
+   when there's more room above the toggle, down from above otherwise. The
+   base position (fixed, top/left/width) comes from the inline :style
+   computed in JS (positionSpeedMenu); this transform just offsets it a few
+   pixels further along the same axis it's already sliding into place from. */
+.slide-fade-enter-active,
+.slide-fade-leave-active {
+  transition: transform 0.2s cubic-bezier(0.22, 0.61, 0.36, 1), opacity 0.16s ease;
+}
+.slide-fade-enter-from.dir-up,
+.slide-fade-leave-to.dir-up {
+  transform: translateY(8px);
+  opacity: 0;
+}
+.slide-fade-enter-from.dir-down,
+.slide-fade-leave-to.dir-down {
+  transform: translateY(-8px);
+  opacity: 0;
 }
 
 .speed-item {
@@ -442,7 +488,7 @@ const handleSliderMouseUp   = () => { isDragging.value = false }
 .speed-item:hover { background: var(--hover-bg); }
 .speed-item.active { background: var(--active-bg); }
 
-/* Custom value — same field as the sidebar's material search (.dropdown-search),
+/* Custom value - same field as the sidebar's material search (.dropdown-search),
    just Enter to apply (no separate button needed). */
 .speed-custom-input {
   width: calc(100% - 16px);

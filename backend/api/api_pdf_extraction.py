@@ -54,11 +54,11 @@ def pt2mm(v: float) -> float:
 # appear in. This is invisible for CorelDraw's PDF export (PDF has no such
 # attribute-vs-style distinction), but it bites the moment someone edits an SVG
 # in Inkscape/Illustrator: those editors write style="stroke:#rrggbb" and often
-# leave a stale stroke="" attribute from before the edit — so the element renders
+# leave a stale stroke="" attribute from before the edit - so the element renders
 # correctly (style wins) everywhere except in our pipeline (attribute wins),
 # silently reclassifying a red vector-engrave line as a blue cut, or vice versa.
 #
-# Fix: before handing the SVG to MuPDF, make the two agree — overwrite each
+# Fix: before handing the SVG to MuPDF, make the two agree - overwrite each
 # presentation attribute with its style-block value wherever both are present
 # and differ, so MuPDF's (wrong) attribute-first preference now reads the
 # correct, CSS-resolved colour either way.
@@ -221,7 +221,7 @@ def extract_sync(file_bytes: bytes, filetype: str = "pdf", watermarks=None) -> d
                 if drw.get("color") is not None:
                     _append_strokes(objects, drw)
 
-            # Raster images (engraving bitmaps) — from the ORIGINAL page.
+            # Raster images (engraving bitmaps) - from the ORIGINAL page.
             try:
                 for info in page.get_image_info(xrefs=True):
                     entry = _extract_image(page.parent, info)
@@ -347,7 +347,7 @@ def _append_strokes(objects: list, drw: dict):
                             "x3": norm_x(item[3].x), "y3": norm_y(item[3].y),
                             "x4": norm_x(item[4].x), "y4": norm_y(item[4].y), "color": color})
         elif kind == "qu":
-            # MuPDF folds four consecutive line segments into a Quad — including
+            # MuPDF folds four consecutive line segments into a Quad - including
             # DEGENERATE ones, e.g. a stroke that runs back and forth over the same
             # line. Skipping these silently dropped whole paths (the machine cuts
             # them, so we must count them). Walking all four corners reproduces the

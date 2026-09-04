@@ -26,7 +26,7 @@ from xml.dom import minidom
 # ── DAT layout (Epilog Fusion preset, 3156 bytes) ─────────────────────────────
 # Verified against the exported CSVs. Each colour has a (power, speed, freq) byte
 # triple; values are 0-100 (%). DPI is a uint16 LE at 0x5A (the old 0x5C4 byte is
-# always 1 — that was a bug). The file also embeds its own name as UTF-16 near
+# always 1 - that was a bug). The file also embeds its own name as UTF-16 near
 # 0x114, but we just use the OS filename.
 DPI_OFFSET = 0x5A
 COLOR_OFFSETS = {          # (power, speed, freq)
@@ -84,7 +84,7 @@ def _thickness_sort_key(label):
     return (0, float(m.group(1))) if m else (1, 0.0)
 
 
-# ── Printer metadata (not in the .DAT — reused from an existing XML) ───────────
+# ── Printer metadata (not in the .DAT - reused from an existing XML) ───────────
 META_KEYS = ("id", "name", "powerW", "bedWidth", "bedHeight", "maxSpeed", "accel")
 
 
@@ -93,7 +93,7 @@ def load_meta(existing_xml, default_name):
     hand-tuned bed size / accel / power survive a regenerate."""
     meta = {
         "id": default_name.lower(), "name": default_name, "powerW": "60",
-        "bedWidth": "1000", "bedHeight": "700", "maxSpeed": "252", "accel": "2370",
+        "bedWidth": "1000", "bedHeight": "700", "maxSpeed": "255", "accel": "2753",
     }
     if existing_xml and os.path.exists(existing_xml):
         try:
@@ -256,7 +256,7 @@ def run_gui():
     BG, TEXT, MUTED, BORDER = "#ffffff", "#1f2933", "#6b7280", "#dfe3e8"
     ACCENT, ACCENT_D, BTN, BTN_H = "#00adc6", "#0093a8", "#eef1f4", "#e2e6ea"
 
-    # ── rounded button (Canvas — ttk can't round corners) ─────────────────────
+    # ── rounded button (Canvas - ttk can't round corners) ─────────────────────
     class RoundButton(tk.Canvas):
         def __init__(self, parent, text, command, *, base, hover, fg,
                      font=("Segoe UI", 10), radius=11, padx=18, pady=9, height=None):
@@ -339,7 +339,7 @@ def run_gui():
 
     # 2 · single folder
     section("Einzelnen Ordner exportieren")
-    desc("Einen bestimmten Presets-Ordner gezielt umwandeln — als Drucker-XML oder als "
+    desc("Einen bestimmten Presets-Ordner gezielt umwandeln - als Drucker-XML oder als "
          "Tabelle (CSV) zum Nachschauen.")
     row2 = ttk.Frame(body)
     row2.pack(anchor="w")
@@ -367,7 +367,7 @@ def run_gui():
     input_entry = tk.Entry(rowp, font=("Segoe UI", 10), relief="flat", bg="#f5f7f9", fg=TEXT,
                            bd=0, highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACCENT)
     input_entry.grid(row=0, column=0, sticky="ew", ipady=8, padx=(0, 8))
-    Tooltip(input_entry, "Pfad zu einer .DAT-Datei — die Vorschau erscheint darunter.")
+    Tooltip(input_entry, "Pfad zu einer .DAT-Datei - die Vorschau erscheint darunter.")
     b_browse = RoundButton(rowp, "Durchsuchen…", lambda: select_input(),
                            base=BTN, hover=BTN_H, fg=TEXT, height=FIELD_H)
     b_browse.grid(row=0, column=1)

@@ -2,7 +2,7 @@
 
 Printer profiles live as self-contained XML files in backend/printers/ (specs +
 material presets). This lists every *.xml there and returns their contents, so
-adding a printer is just dropping a new file in that folder — no index needed.
+adding a printer is just dropping a new file in that folder - no index needed.
 """
 
 from pathlib import Path
